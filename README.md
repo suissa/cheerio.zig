@@ -15,6 +15,10 @@ See the [CHANGELOG.md](changelog) for detailed information on past changes.
 
 Requires Zig 0.16.0.
 
+The html5lib tokenizer fixtures are a Git submodule. Clone with
+`--recurse-submodules`, or run `git submodule update --init` before running
+`zig build test-html5lib`.
+
 ```sh
 zig build test           # run the library's unit tests
 zig build test-html5lib  # run the tokenizer against the html5lib-tests suite
@@ -87,6 +91,18 @@ pub fn main() !void {
 `.text()`, `.attr(name)`, `.html()`, `.first()`, `.eq(index)`, and `.each(fn)`.
 Selectors support tag names, `.class`, `#id`, `*`, compound selectors
 (`div.row#main`), and descendant combinators (`div p.item`).
+
+For HTML input, use `zhtml.load` and keep the returned document alive while
+using its selections:
+
+```zig
+var page = try zhtml.load(allocator, "<main><h1>Hello</h1></main>");
+defer page.deinit();
+var heading = try page.select("main h1");
+defer heading.deinit();
+const title = try heading.text();
+defer allocator.free(title);
+```
 
 ## License
 
