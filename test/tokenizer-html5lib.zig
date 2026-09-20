@@ -77,6 +77,14 @@ test "test4.test" {
     try runTestFile("test/html5lib-tests/tokenizer/test4.test");
 }
 
+test "entities.test" {
+    try runTestFile("test/html5lib-tests/tokenizer/entities.test");
+}
+
+test "numericEntities.test" {
+    try runTestFile("test/html5lib-tests/tokenizer/numericEntities.test");
+}
+
 fn runTestFile(file_path: []const u8) !void {
     const allocator = std.heap.page_allocator;
     const contents = try std.Io.Dir.cwd().readFileAlloc(testing.io, file_path, allocator, .unlimited);
@@ -136,6 +144,7 @@ fn runTestFile(file_path: []const u8) !void {
 
 fn runTest(allocator: std.mem.Allocator, input: []const u8, expected_tokens: []Token, expected_errors: []ErrorInfo, initial_state: ?Tokenizer.State) !void {
     var tokenizer = try Tokenizer.initWithString(allocator, input);
+    defer tokenizer.deinit();
     if (initial_state) |_initial_state| {
         tokenizer.state = _initial_state;
     }
@@ -163,6 +172,7 @@ fn runTest(allocator: std.mem.Allocator, input: []const u8, expected_tokens: []T
         if (token == Token.EndOfFile)
             break;
 
+        try testing.expect(num_tokens < expected_tokens.len);
         const expected_token = expected_tokens[num_tokens];
         std.debug.print("expected: {}\nactual:   {}\n\n", .{ expected_token, token });
         try expectEqualTokens(expected_token, token);
