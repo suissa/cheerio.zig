@@ -154,7 +154,7 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
 }
 
 fn isSpace(c: u8) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '\f';
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0c;
 }
 
 fn skipSpace(source: []const u8, pos: *usize) void {
