@@ -161,13 +161,12 @@ pub const Tokenizer = struct {
     /// Create a new {{Tokenizer}} instance using a file.
     pub fn initWithFile(io: std.Io, allocator: mem.Allocator, filename: []const u8) !Tokenizer {
         const contents = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .unlimited);
-        var tokenizer = try Tokenizer.initWithString(allocator, contents);
-        tokenizer.backlog = SimpleFifo(Token).init(allocator);
-        tokenizer.errorQueue = SimpleFifo(ParseErrorIntType).init(allocator);
+        var tokenizer = Tokenizer.initWithString(allocator, contents) catch |err| {
+            allocator.free(contents);
+            return err;
+        };
         tokenizer.filename = filename;
         tokenizer.allocated = true;
-        tokenizer.temporaryBuffer = ArrayList(u8).init(allocator);
-        tokenizer.namedCharacterReferenceTable = buildNamedCharacterReferenceTable(allocator);
         return tokenizer;
     }
 
@@ -189,17 +188,37 @@ pub const Tokenizer = struct {
         };
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
+        self.backlog.deinit();
+        self.errorQueue.deinit();
+        self.temporaryBuffer.deinit();
+        self.currentToken.deinit();
+        self.namedCharacterReferenceTable.deinit();
         if (self.allocated) {
             self.allocator.free(self.contents);
+            self.allocated = false;
+            self.contents = "";
         }
     }
 
     pub fn reset(self: *Self) void {
+        const source = self.contents;
+        const source_was_owned = self.allocated;
         self.line = 1;
         self.column = 0;
         self.index = 0;
         self.deinit();
+        self.state = .Data;
+        self.returnState = null;
+        self.reconsume = false;
+        self.currentToken = IncompleteToken.init(self.allocator);
+        self.backlog = SimpleFifo(Token).init(self.allocator);
+        self.errorQueue = SimpleFifo(ParseErrorIntType).init(self.allocator);
+        self.temporaryBuffer = ArrayList(u8).init(self.allocator);
+        self.namedCharacterReferenceTable = buildNamedCharacterReferenceTable(self.allocator);
+        self.allocated = false;
+        self.filename = "";
+        self.contents = if (source_was_owned) "" else source;
     }
 
     /// null being returned always signifies EOF
@@ -2433,8 +2452,12 @@ pub const IncompleteToken = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // TODO: Handle deinit of ArrayList's, currently we can't deinit them
-        //       because we use toOwnedSlice
+        self.tokenData.deinit();
+        self.publicIdentifier.deinit();
+        self.systemIdentifier.deinit();
+        self.commentData.deinit();
+        self.currentAttributeName.deinit();
+        self.currentAttributeValue.deinit();
         self.attributes.deinit();
     }
 
@@ -2529,7 +2552,7 @@ pub const IncompleteToken = struct {
 test "nextChar, currentChar, peekChar, peekN" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var tokenizer = try Tokenizer.initWithString(&arena.allocator, "abcdefghijklmnop");
+    var tokenizer = try Tokenizer.initWithString(arena.allocator(), "abcdefghijklmnop");
     defer tokenizer.deinit();
 
     // before consuming anything, current/peek/next should all get the first char

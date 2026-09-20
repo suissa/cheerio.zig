@@ -12,9 +12,13 @@ pub const dom = @import("dom.zig");
 pub const dsl = @import("dsl.zig");
 pub const select = @import("select.zig").select;
 pub const Selection = @import("select.zig").Selection;
+pub const Cheerio = @import("cheerio.zig").Cheerio;
+pub const CheerioDocument = @import("cheerio.zig").Document;
+pub const load = @import("cheerio.zig").load;
 
 test {
     _ = @import("dom.zig");
     _ = @import("dsl.zig");
     _ = @import("select.zig");
+    _ = @import("cheerio.zig");
 }

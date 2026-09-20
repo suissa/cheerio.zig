@@ -12,6 +12,7 @@ pub const Node = struct {
 
     /// The tag name, e.g. "div". The sentinel tag `"#text"` marks a text node.
     tag: []const u8,
+    allocator: mem.Allocator,
     attrs: StringHashMap([]const u8),
     children: ArrayList(*Node),
     /// Only set (and only meaningful) on `"#text"` nodes.
@@ -22,6 +23,7 @@ pub const Node = struct {
         const node = allocator.create(Node) catch unreachable;
         node.* = Node{
             .tag = tag,
+            .allocator = allocator,
             .attrs = StringHashMap([]const u8).init(allocator),
             .children = ArrayList(*Node).init(allocator),
         };
@@ -35,6 +37,27 @@ pub const Node = struct {
     pub fn appendChild(self: *Self, child: *Node) void {
         child.parent = self;
         self.children.append(child) catch unreachable;
+    }
+
+    pub fn prependChild(self: *Self, child: *Node) void {
+        child.parent = self;
+        self.children.insert(0, child) catch unreachable;
+    }
+
+    pub fn removeChild(self: *Self, child: *Node) bool {
+        for (self.children.items, 0..) |candidate, i| {
+            if (candidate == child) {
+                _ = self.children.orderedRemove(i);
+                child.parent = null;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn clearChildren(self: *Self) void {
+        for (self.children.items) |child| destroyTree(self.allocator, child);
+        self.children.clearRetainingCapacity();
     }
 
     pub fn attr(self: *const Self, name: []const u8) ?[]const u8 {
@@ -72,6 +95,12 @@ pub const Node = struct {
     pub fn outerHtml(self: *const Self, allocator: mem.Allocator) ![]const u8 {
         var buf = ArrayList(u8).init(allocator);
         try self.writeHtml(&buf);
+        return buf.toOwnedSlice();
+    }
+
+    pub fn innerHtml(self: *const Self, allocator: mem.Allocator) ![]const u8 {
+        var buf = ArrayList(u8).init(allocator);
+        for (self.children.items) |child| try child.writeHtml(&buf);
         return buf.toOwnedSlice();
     }
 
@@ -134,8 +163,22 @@ test "Node.hasClass" {
 }
 
 fn freeTree(allocator: mem.Allocator, node: *Node) void {
-    for (node.children.items) |child| freeTree(allocator, child);
+    destroyTree(allocator, node);
+}
+
+pub fn destroyTree(allocator: mem.Allocator, node: *Node) void {
+    for (node.children.items) |child| destroyTree(allocator, child);
     node.children.deinit();
     node.attrs.deinit();
     allocator.destroy(node);
+}
+
+pub fn cloneTree(allocator: mem.Allocator, source: *const Node) !*Node {
+    const copy = Node.init(allocator, source.tag);
+    errdefer destroyTree(allocator, copy);
+    copy.text = source.text;
+    var attrs = source.attrs.iterator();
+    while (attrs.next()) |entry| try copy.attrs.put(entry.key_ptr.*, entry.value_ptr.*);
+    for (source.children.items) |child| try copy.appendChild(try cloneTree(allocator, child));
+    return copy;
 }

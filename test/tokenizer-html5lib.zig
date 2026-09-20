@@ -12,6 +12,8 @@ const ParseError = zhtml.ParseError;
 // TODO: If test.doubleEscaped is present and true, then every string within test.output must
 //       be further unescaped (as described above) before comparing with the tokenizer's output.
 // TODO: Run more .test files once the relevant above TODOs are addressed and the tokenizer progresses
+// TODO: Enable entities.test and numericEntities.test after the remaining
+//       named/numeric character-reference semantics match html5lib.
 
 const ignored_tests = [_][]const u8{
     "Unfinished entity",
@@ -136,6 +138,7 @@ fn runTestFile(file_path: []const u8) !void {
 
 fn runTest(allocator: std.mem.Allocator, input: []const u8, expected_tokens: []Token, expected_errors: []ErrorInfo, initial_state: ?Tokenizer.State) !void {
     var tokenizer = try Tokenizer.initWithString(allocator, input);
+    defer tokenizer.deinit();
     if (initial_state) |_initial_state| {
         tokenizer.state = _initial_state;
     }
@@ -163,6 +166,7 @@ fn runTest(allocator: std.mem.Allocator, input: []const u8, expected_tokens: []T
         if (token == Token.EndOfFile)
             break;
 
+        try testing.expect(num_tokens < expected_tokens.len);
         const expected_token = expected_tokens[num_tokens];
         std.debug.print("expected: {}\nactual:   {}\n\n", .{ expected_token, token });
         try expectEqualTokens(expected_token, token);
