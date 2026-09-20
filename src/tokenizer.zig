@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 32114)
-Total output lines: 2613
-
 const std = @import("std");
 const mem = std.mem;
 const builtin = std.builtin;
@@ -857,7 +854,936 @@ pub const Tokenizer = struct {
                     }
                     self.reconsume = true;
                     self.state = .ScriptDataEscaped;
-                    return self.popQueued…12114 tokens truncated…self.emitToken(self.currentToken.complete(self));
+                    return self.popQueuedErrorOrToken();
+                },
+                // 13.2.5.26 Script data double escape start state
+                .ScriptDataDoubleEscapeStart => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ', '/', '>' => {
+                                if (mem.eql(u8, self.temporaryBuffer.items, "script")) {
+                                    self.state = .ScriptDataDoubleEscaped;
+                                } else {
+                                    self.state = .ScriptDataEscaped;
+                                }
+                                self.emitToken(Token{ .Character = .{ .data = next_char } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => if (std.ascii.isAlphabetic(next_char)) {
+                                const lowered = std.ascii.toLower(next_char);
+                                self.temporaryBuffer.append(lowered) catch unreachable;
+                                self.emitToken(Token{ .Character = .{ .data = lowered } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    }
+                    // anything else
+                    self.reconsume = true;
+                    self.state = .ScriptDataEscaped;
+                },
+                // 13.2.5.27 Script data double escaped state
+                .ScriptDataDoubleEscaped => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.state = .ScriptDataDoubleEscapedDash;
+                                self.emitToken(Token{ .Character = .{ .data = '-' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '<' => {
+                                self.state = .ScriptDataDoubleEscapedLessThanSign;
+                                self.emitToken(Token{ .Character = .{ .data = '<' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.emitToken(Token{ .Character = .{ .data = '�' } });
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.emitToken(Token{ .Character = .{ .data = next_char } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInScriptHTMLCommentLikeText;
+                    }
+                },
+                // 13.2.5.28 Script data double escaped dash state
+                .ScriptDataDoubleEscapedDash => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.state = .ScriptDataDoubleEscapedDashDash;
+                                self.emitToken(Token{ .Character = .{ .data = '-' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '<' => {
+                                self.state = .ScriptDataDoubleEscapedLessThanSign;
+                                self.emitToken(Token{ .Character = .{ .data = '<' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.state = .ScriptDataDoubleEscaped;
+                                self.emitToken(Token{ .Character = .{ .data = '�' } });
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.state = .ScriptDataDoubleEscaped;
+                                self.emitToken(Token{ .Character = .{ .data = next_char } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInScriptHTMLCommentLikeText;
+                    }
+                },
+                // 13.2.5.29 Script data double escaped dash dash state
+                .ScriptDataDoubleEscapedDashDash => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.emitToken(Token{ .Character = .{ .data = '-' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '<' => {
+                                self.state = .ScriptDataDoubleEscapedLessThanSign;
+                                self.emitToken(Token{ .Character = .{ .data = '<' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '>' => {
+                                self.state = .ScriptData;
+                                self.emitToken(Token{ .Character = .{ .data = '>' } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.state = .ScriptDataDoubleEscaped;
+                                self.emitToken(Token{ .Character = .{ .data = '�' } });
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.state = .ScriptDataDoubleEscaped;
+                                self.emitToken(Token{ .Character = .{ .data = next_char } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInScriptHTMLCommentLikeText;
+                    }
+                },
+                // 13.2.5.30 Script data double escaped less-than sign state
+                .ScriptDataDoubleEscapedLessThanSign => {
+                    const next_char = self.nextChar();
+                    if (next_char != null and next_char.? == '/') {
+                        self.temporaryBuffer.shrinkAndFree(0);
+                        self.state = .ScriptDataDoubleEscapeEnd;
+                        self.emitToken(Token{ .Character = .{ .data = '/' } });
+                        return self.popQueuedErrorOrToken();
+                    } else {
+                        self.reconsume = true;
+                        self.state = .ScriptDataDoubleEscaped;
+                    }
+                },
+                // 13.2.5.31 Script data double escape end state
+                .ScriptDataDoubleEscapeEnd => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ', '/', '>' => {
+                                if (mem.eql(u8, self.temporaryBuffer.items, "script")) {
+                                    self.state = .ScriptDataEscaped;
+                                } else {
+                                    self.state = .ScriptDataDoubleEscaped;
+                                }
+                                self.emitToken(Token{ .Character = .{ .data = next_char } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => if (std.ascii.isAlphabetic(next_char)) {
+                                const lowered = std.ascii.toLower(next_char);
+                                self.temporaryBuffer.append(lowered) catch unreachable;
+                                self.emitToken(Token{ .Character = .{ .data = lowered } });
+                                return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    }
+                    // anything else
+                    self.reconsume = true;
+                    self.state = .ScriptDataDoubleEscaped;
+                },
+                // 13.2.5.32 Before attribute name state
+                .BeforeAttributeName => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                // Ignore and do nothing.
+                            },
+                            '/', '>' => {
+                                self.state = .AfterAttributeName;
+                                self.reconsume = true;
+                            },
+                            '=' => {
+                                self.currentToken.startNewAttribute(self) catch unreachable;
+                                self.currentToken.currentAttributeName.append(next_char) catch unreachable;
+                                self.state = .AttributeName;
+                                return ParseError.UnexpectedEqualsSignBeforeAttributeName;
+                            },
+                            else => {
+                                self.currentToken.startNewAttribute(self) catch unreachable;
+                                self.state = .AttributeName;
+                                self.reconsume = true;
+                                // startNewAttribute can emit an error
+                                if (self.hasQueuedErrorOrToken())
+                                    return self.popQueuedErrorOrToken();
+                            },
+                        }
+                    } else {
+                        self.reconsume = true;
+                        self.state = .AfterAttributeName;
+                    }
+                },
+                // 13.2.5.33 Attribute name state
+                .AttributeName => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ', '/', '>' => {
+                                self.state = .AfterAttributeName;
+                                self.reconsume = true;
+                            },
+                            '=' => {
+                                self.state = .BeforeAttributeValue;
+                            },
+                            0x00 => {
+                                self.currentToken.currentAttributeName.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            '"', '\'', '<' => {
+                                self.currentToken.currentAttributeName.append(next_char) catch unreachable;
+                                return ParseError.UnexpectedCharacterInAttributeName;
+                            },
+                            else => {
+                                self.currentToken.currentAttributeName.append(std.ascii.toLower(next_char)) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.reconsume = true;
+                        self.state = .AfterAttributeName;
+                    }
+                },
+                // 13.2.5.34 After attribute name state
+                .AfterAttributeName => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                // Ignore and do nothing.
+                            },
+                            '/' => {
+                                self.state = .SelfClosingStartTag;
+                            },
+                            '=' => {
+                                self.state = .BeforeAttributeValue;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => {
+                                self.currentToken.startNewAttribute(self) catch unreachable;
+                                self.state = .AttributeName;
+                                self.reconsume = true;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.35 Before attribute value state
+                .BeforeAttributeValue => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                // Ignore and do nothing.
+                                continue;
+                            },
+                            '"' => {
+                                self.state = .AttributeValueDoubleQuoted;
+                                continue;
+                            },
+                            '\'' => {
+                                self.state = .AttributeValueSingleQuoted;
+                                continue;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.MissingAttributeValue;
+                            },
+                            else => {}, // fallthrough
+                        }
+                    }
+                    // anything else
+                    self.reconsume = true;
+                    self.state = .AttributeValueUnquoted;
+                },
+                // 13.2.5.36 Attribute value (double-quoted) state
+                .AttributeValueDoubleQuoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '"' => {
+                                self.state = .AfterAttributeValueQuoted;
+                            },
+                            '&' => {
+                                self.returnState = .AttributeValueDoubleQuoted;
+                                self.state = .CharacterReference;
+                            },
+                            0x00 => {
+                                self.currentToken.currentAttributeValue.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.currentToken.currentAttributeValue.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.37 Attribute value (single-quoted) state
+                .AttributeValueSingleQuoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\'' => {
+                                self.state = .AfterAttributeValueQuoted;
+                            },
+                            '&' => {
+                                self.returnState = .AttributeValueSingleQuoted;
+                                self.state = .CharacterReference;
+                            },
+                            0x00 => {
+                                self.currentToken.currentAttributeValue.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.currentToken.currentAttributeValue.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.38 Attribute value (unquoted) state
+                .AttributeValueUnquoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .BeforeAttributeName;
+                            },
+                            '&' => {
+                                self.returnState = .AttributeValueUnquoted;
+                                self.state = .CharacterReference;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.currentToken.currentAttributeValue.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            '"', '\'', '<', '=', '`' => {
+                                self.currentToken.currentAttributeValue.append(next_char) catch unreachable;
+                                return ParseError.UnexpectedCharacterInUnquotedAttributeValue;
+                            },
+                            else => {
+                                self.currentToken.currentAttributeValue.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.39 After attribute value (quoted) state
+                .AfterAttributeValueQuoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .BeforeAttributeName;
+                            },
+                            '/' => {
+                                self.state = .SelfClosingStartTag;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => {
+                                self.state = .BeforeAttributeName;
+                                self.reconsume = true;
+                                return ParseError.MissingWhitespaceBetweenAttributes;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.40 Self-closing start tag state
+                .SelfClosingStartTag => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '>' => {
+                                self.state = .Data;
+                                self.currentToken.selfClosing = true;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => {
+                                self.reconsume = true;
+                                self.state = .BeforeAttributeName;
+                                return ParseError.UnexpectedSolidusInTag;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInTag;
+                    }
+                },
+                // 13.2.5.41 Bogus comment state
+                .BogusComment => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.currentToken.commentData.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.currentToken.commentData.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return self.popQueuedErrorOrToken();
+                    }
+                },
+                // 13.2.5.42 Markup declaration open state
+                .MarkupDeclarationOpen => {
+                    var next_seven = self.peekN(7);
+
+                    if (next_seven.len >= 2 and mem.eql(u8, next_seven[0..2], "--")) {
+                        self.index += 2;
+                        self.column += 2;
+                        self.currentToken.create(.Comment);
+                        self.state = .CommentStart;
+                    } else if (std.ascii.eqlIgnoreCase(next_seven, "DOCTYPE")) {
+                        self.index += 7;
+                        self.column += 7;
+                        self.state = .DOCTYPE;
+                    } else if (mem.eql(u8, next_seven, "[CDATA[")) {
+                        // FIXME: Consume those characters. If there is an adjusted current node and it is not
+                        // an element in the HTML namespace, then switch to the CDATA section state.
+                        self.index += 7;
+                        self.column += 7;
+                        self.currentToken.create(.Comment);
+                        self.currentToken.commentData.appendSlice("[CDATA[") catch unreachable;
+                        self.state = .BogusComment;
+                        return ParseError.CDATAInHtmlContent;
+                    } else {
+                        self.state = .BogusComment;
+                        self.currentToken.create(.Comment);
+                        return ParseError.IncorrectlyOpenedComment;
+                    }
+                },
+                // 13.2.5.43 Comment start state
+                .CommentStart => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.state = .CommentStartDash;
+                                continue;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.AbruptClosingOfEmptyComment;
+                            },
+                            else => {}, // fallthrough
+                        }
+                    }
+                    // anything else
+                    self.reconsume = true;
+                    self.state = .Comment;
+                },
+                // 13.2.5.44 Comment start dash state
+                .CommentStartDash => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.state = .CommentEnd;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.AbruptClosingOfEmptyComment;
+                            },
+                            else => {
+                                self.currentToken.commentData.append('-') catch unreachable;
+                                self.reconsume = true;
+                                self.state = .Comment;
+                            },
+                        }
+                    } else {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInComment;
+                    }
+                },
+                // 13.2.5.45 Comment state
+                .Comment => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '<' => {
+                                self.currentToken.commentData.append(next_char) catch unreachable;
+                                self.state = .CommentLessThanSign;
+                            },
+                            '-' => {
+                                self.state = .CommentEndDash;
+                            },
+                            0x00 => {
+                                self.currentToken.commentData.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.currentToken.commentData.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInComment;
+                    }
+                },
+                // 13.2.5.46 Comment less-than sign state
+                .CommentLessThanSign => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '!' => {
+                                self.currentToken.commentData.append('!') catch unreachable;
+                                self.state = .CommentLessThanSignBang;
+                                continue;
+                            },
+                            '<' => {
+                                self.currentToken.commentData.append(next_char) catch unreachable;
+                                continue;
+                            },
+                            else => {}, // fallthrough
+                        }
+                    }
+                    // anything else
+                    self.reconsume = true;
+                    self.state = .Comment;
+                },
+                // 13.2.5.47 Comment less-than sign bang state
+                .CommentLessThanSignBang => {
+                    const next_char = self.nextChar();
+                    if (next_char != null and next_char.? == '-') {
+                        self.state = .CommentLessThanSignBangDash;
+                    } else {
+                        self.reconsume = true;
+                        self.state = .Comment;
+                    }
+                },
+                // 13.2.5.48 Comment less-than sign bang dash state
+                .CommentLessThanSignBangDash => {
+                    const next_char = self.nextChar();
+                    if (next_char != null and next_char.? == '-') {
+                        self.state = .CommentLessThanSignBangDashDash;
+                    } else {
+                        self.reconsume = true;
+                        self.state = .CommentEndDash;
+                    }
+                },
+                // 13.2.5.49 Comment less-than sign bang dash dash state
+                .CommentLessThanSignBangDashDash => {
+                    const next_char = self.nextChar();
+                    if (next_char == null or next_char.? == '>') {
+                        self.reconsume = true;
+                        self.state = .CommentEnd;
+                    } else {
+                        self.reconsume = true;
+                        self.state = .CommentEnd;
+                        return ParseError.NestedComment;
+                    }
+                },
+                // 13.2.5.50 Comment end dash state
+                .CommentEndDash => {
+                    const next_char = self.nextChar();
+                    if (next_char != null and next_char.? == '-') {
+                        self.state = .CommentEnd;
+                    } else if (next_char == null) {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInComment;
+                    } else {
+                        self.currentToken.commentData.append('-') catch unreachable;
+                        self.reconsume = true;
+                        self.state = .Comment;
+                    }
+                },
+                // 13.2.5.51 Comment end state
+                .CommentEnd => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '!' => {
+                                self.state = .CommentEndBang;
+                            },
+                            '-' => {
+                                self.currentToken.commentData.append(next_char) catch unreachable;
+                            },
+                            else => {
+                                self.currentToken.commentData.appendSlice("--") catch unreachable;
+                                self.reconsume = true;
+                                self.state = .Comment;
+                            },
+                        }
+                    } else {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInComment;
+                    }
+                },
+                // 13.2.5.52 Comment end bang state
+                .CommentEndBang => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '-' => {
+                                self.currentToken.commentData.appendSlice("--!") catch unreachable;
+                                self.state = .CommentEndDash;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.IncorrectlyClosedComment;
+                            },
+                            else => {
+                                self.currentToken.commentData.appendSlice("--!") catch unreachable;
+                                self.reconsume = true;
+                                self.state = .Comment;
+                            },
+                        }
+                    } else {
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInComment;
+                    }
+                },
+                // 13.2.5.53 DOCTYPE state
+                .DOCTYPE => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .BeforeDOCTYPEName;
+                            },
+                            '>' => {
+                                self.state = .BeforeDOCTYPEName;
+                                self.reconsume = true;
+                            },
+                            else => {
+                                self.state = .BeforeDOCTYPEName;
+                                self.reconsume = true;
+                                return ParseError.MissingWhitespaceBeforeDoctypeName;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token{ .DOCTYPE = .{ .forceQuirks = true } });
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.54 Before DOCTYPE name state
+                .BeforeDOCTYPEName => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                // Ignore and do nothing.
+                            },
+                            0x00 => {
+                                self.currentToken.create(.DOCTYPE);
+                                self.currentToken.tokenData.appendSlice("�") catch unreachable;
+                                self.state = .DOCTYPEName;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(Token{ .DOCTYPE = .{ .forceQuirks = true } });
+                                return ParseError.MissingDoctypeName;
+                            },
+                            else => {
+                                self.currentToken.create(.DOCTYPE);
+                                self.currentToken.tokenData.append(std.ascii.toLower(next_char)) catch unreachable;
+                                self.state = .DOCTYPEName;
+                            },
+                        }
+                    } else {
+                        self.emitToken(Token{ .DOCTYPE = .{ .forceQuirks = true } });
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.55 DOCTYPE name state
+                .DOCTYPEName => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .AfterDOCTYPEName;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            0x00 => {
+                                self.currentToken.tokenData.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            else => {
+                                self.currentToken.tokenData.append(std.ascii.toLower(next_char)) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.56 After DOCTYPE name state
+                .AfterDOCTYPEName => {
+                    // delay consuming for the 'anything else' case
+                    if (self.peekChar()) |next_char| {
+                        switch (next_char) {
+                            // TODO: Check if this is right. It doesn't mention in the spec that carriage returns are to be consumed.
+                            '\t', 0x0A, 0x0C, ' ', '\r' => {
+                                self.index += 1; // consume
+                                self.column += 1;
+                            },
+                            '>' => {
+                                self.index += 1; // consume
+                                self.column += 1;
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            else => {
+                                const next_six = self.peekN(6);
+                                if (std.ascii.eqlIgnoreCase(next_six, "PUBLIC")) {
+                                    self.index += 6;
+                                    self.column += 6;
+                                    self.state = .AfterDOCTYPEPublicKeyword;
+                                } else if (std.ascii.eqlIgnoreCase(next_six, "SYSTEM")) {
+                                    self.index += 6;
+                                    self.column += 6;
+                                    self.state = .AfterDOCTYPESystemKeyword;
+                                } else {
+                                    // reconsume, but since we peek'd to begin with, no need to actually set reconsume here
+                                    self.currentToken.forceQuirks = true;
+                                    self.state = .BogusDOCTYPE;
+                                    return ParseError.InvalidCharacterSequenceAfterDoctypeName;
+                                }
+                            },
+                        }
+                    } else {
+                        self.index += 1; // consume
+                        self.column += 1;
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.57 After DOCTYPE public keyword state
+                .AfterDOCTYPEPublicKeyword => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .BeforeDOCTYPEPublicIdentifier;
+                            },
+                            '"' => {
+                                self.currentToken.publicIdentifier.shrinkAndFree(0);
+                                self.currentToken.publicIdentifierMissing = false;
+                                self.state = .DOCTYPEPublicIdentifierDoubleQuoted;
+                                return ParseError.MissingWhitespaceAfterDoctypePublicKeyword;
+                            },
+                            '\'' => {
+                                self.currentToken.publicIdentifier.shrinkAndFree(0);
+                                self.currentToken.publicIdentifierMissing = false;
+                                self.state = .DOCTYPEPublicIdentifierSingleQuoted;
+                                return ParseError.MissingWhitespaceAfterDoctypePublicKeyword;
+                            },
+                            '>' => {
+                                self.currentToken.forceQuirks = true;
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.MissingDoctypePublicIdentifier;
+                            },
+                            else => {
+                                self.currentToken.forceQuirks = true;
+                                self.reconsume = true;
+                                self.state = .BogusDOCTYPE;
+                                return ParseError.MissingQuoteBeforeDoctypePublicIdentifier;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.58 Before DOCTYPE public identifier state
+                .BeforeDOCTYPEPublicIdentifier => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                // Ignore and do nothing
+                            },
+                            '"' => {
+                                self.currentToken.publicIdentifier.shrinkAndFree(0);
+                                self.currentToken.publicIdentifierMissing = false;
+                                self.state = .DOCTYPEPublicIdentifierDoubleQuoted;
+                            },
+                            '\'' => {
+                                self.currentToken.publicIdentifier.shrinkAndFree(0);
+                                self.currentToken.publicIdentifierMissing = false;
+                                self.state = .DOCTYPEPublicIdentifierSingleQuoted;
+                            },
+                            '>' => {
+                                self.currentToken.forceQuirks = true;
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.MissingDoctypePublicIdentifier;
+                            },
+                            else => {
+                                self.currentToken.forceQuirks = true;
+                                self.reconsume = true;
+                                self.state = .BogusDOCTYPE;
+                                return ParseError.MissingQuoteBeforeDoctypePublicIdentifier;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.59 DOCTYPE public identifier (double-quoted) state
+                .DOCTYPEPublicIdentifierDoubleQuoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '"' => {
+                                self.state = .AfterDOCTYPEPublicIdentifier;
+                            },
+                            0x00 => {
+                                self.currentToken.publicIdentifier.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            '>' => {
+                                self.currentToken.forceQuirks = true;
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.AbruptDoctypePublicIdentifier;
+                            },
+                            else => {
+                                self.currentToken.publicIdentifier.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.60 DOCTYPE public identifier (single-quoted) state
+                .DOCTYPEPublicIdentifierSingleQuoted => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\'' => {
+                                self.state = .AfterDOCTYPEPublicIdentifier;
+                            },
+                            0x00 => {
+                                self.currentToken.publicIdentifier.appendSlice("�") catch unreachable;
+                                return ParseError.UnexpectedNullCharacter;
+                            },
+                            '>' => {
+                                self.currentToken.forceQuirks = true;
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return ParseError.AbruptDoctypePublicIdentifier;
+                            },
+                            else => {
+                                self.currentToken.publicIdentifier.append(next_char) catch unreachable;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
+                        self.emitToken(Token.EndOfFile);
+                        return ParseError.EofInDOCTYPE;
+                    }
+                },
+                // 13.2.5.61 After DOCTYPE public identifier state
+                .AfterDOCTYPEPublicIdentifier => {
+                    if (self.nextChar()) |next_char| {
+                        switch (next_char) {
+                            '\t', 0x0A, 0x0C, ' ' => {
+                                self.state = .BetweenDOCTYPEPublicAndSystemIdentifiers;
+                            },
+                            '>' => {
+                                self.state = .Data;
+                                self.emitToken(self.currentToken.complete(self));
+                                return self.popQueuedErrorOrToken();
+                            },
+                            '"' => {
+                                self.currentToken.systemIdentifier.shrinkAndFree(0);
+                                self.currentToken.systemIdentifierMissing = false;
+                                self.state = .DOCTYPESystemIdentifierDoubleQuoted;
+                                return ParseError.MissingWhitespaceBetweenDoctypePublicAndSystemIdentifiers;
+                            },
+                            '\'' => {
+                                self.currentToken.systemIdentifier.shrinkAndFree(0);
+                                self.currentToken.systemIdentifierMissing = false;
+                                self.state = .DOCTYPESystemIdentifierSingleQuoted;
+                                return ParseError.MissingWhitespaceBetweenDoctypePublicAndSystemIdentifiers;
+                            },
+                            else => {
+                                self.currentToken.forceQuirks = true;
+                                self.reconsume = true;
+                                self.state = .BogusDOCTYPE;
+                                return ParseError.MissingQuoteBeforeDoctypeSystemIdentifier;
+                            },
+                        }
+                    } else {
+                        self.currentToken.forceQuirks = true;
+                        self.emitToken(self.currentToken.complete(self));
                         self.emitToken(Token.EndOfFile);
                         return ParseError.EofInDOCTYPE;
                     }
