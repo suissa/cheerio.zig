@@ -244,7 +244,11 @@ pub const Selection = struct {
     }
 
     pub fn remove(self: Self) void {
-        for (self.nodes) |node| if (node.parent) |p| _ = p.removeChild(node);
+        for (self.nodes) |node| {
+            if (node.parent) |p| {
+                _ = p.removeChild(node);
+            }
+        }
     }
 
     pub fn empty(self: Self) void {
