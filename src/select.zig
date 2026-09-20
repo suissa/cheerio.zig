@@ -113,6 +113,12 @@ pub const Selection = struct {
         return self.nodes[index];
     }
 
+    pub fn toArray(self: Self) ![]*dom.Node {
+        const out = try self.allocator.alloc(*dom.Node, self.nodes.len);
+        @memcpy(out, self.nodes);
+        return out;
+    }
+
     pub fn first(self: Self) !Self {
         const out = try self.allocator.alloc(*dom.Node, if (self.nodes.len > 0) 1 else 0);
         if (self.nodes.len > 0) out[0] = self.nodes[0];
@@ -142,10 +148,107 @@ pub const Selection = struct {
         return self.nodes[0].attr(name);
     }
 
-    /// `.html()`: the serialized outer HTML of the first matched node.
+    pub fn hasClass(self: Self, class: []const u8) bool {
+        return self.nodes.len > 0 and self.nodes[0].hasClass(class);
+    }
+
+    pub fn is(self: Self, selector: []const u8) !bool {
+        const filtered = try self.filter(selector);
+        defer filtered.deinit();
+        return filtered.length() > 0;
+    }
+
+    pub fn append(self: Self, child: *dom.Node) void {
+        for (self.nodes) |node| {
+            const copy = dom.cloneTree(self.allocator, child) catch unreachable;
+            node.appendChild(copy);
+        }
+    }
+
+    pub fn prepend(self: Self, child: *dom.Node) void {
+        for (self.nodes) |node| {
+            const copy = dom.cloneTree(self.allocator, child) catch unreachable;
+            node.prependChild(copy);
+        }
+    }
+
+    /// `.html()`: the serialized inner HTML of the first matched node.
     pub fn html(self: Self) !?[]const u8 {
         if (self.nodes.len == 0) return null;
+        return try self.nodes[0].innerHtml(self.allocator);
+    }
+
+    pub fn outerHtml(self: Self) !?[]const u8 {
+        if (self.nodes.len == 0) return null;
         return try self.nodes[0].outerHtml(self.allocator);
+    }
+
+    pub fn parent(self: Self) !Self {
+        var out = ArrayList(*dom.Node).init(self.allocator);
+        var seen = std.AutoHashMap(*dom.Node, void).init(self.allocator);
+        defer seen.deinit();
+        for (self.nodes) |node| {
+            if (node.parent) |p| if (!seen.contains(p)) {
+                try seen.put(p, {});
+                try out.append(p);
+            };
+        }
+        return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
+    }
+
+    pub fn children(self: Self) !Self {
+        var out = ArrayList(*dom.Node).init(self.allocator);
+        for (self.nodes) |node| {
+            for (node.children.items) |child| {
+                if (!child.isText()) try out.append(child);
+            }
+        }
+        return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
+    }
+
+    pub fn next(self: Self) !Self {
+        var out = ArrayList(*dom.Node).init(self.allocator);
+        for (self.nodes) |node| {
+            const p = node.parent orelse continue;
+            for (p.children.items, 0..) |candidate, i| {
+                if (candidate == node and i + 1 < p.children.items.len) {
+                    try out.append(p.children.items[i + 1]);
+                    break;
+                }
+            }
+        }
+        return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
+    }
+
+    pub fn prev(self: Self) !Self {
+        var out = ArrayList(*dom.Node).init(self.allocator);
+        for (self.nodes) |node| {
+            const p = node.parent orelse continue;
+            for (p.children.items, 0..) |candidate, i| {
+                if (candidate == node and i > 0) {
+                    try out.append(p.children.items[i - 1]);
+                    break;
+                }
+            }
+        }
+        return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
+    }
+
+    pub fn filter(self: Self, selector: []const u8) !Self {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const chain = try parseChain(arena.allocator(), selector);
+        var out = ArrayList(*dom.Node).init(self.allocator);
+        for (self.nodes) |node| if (matchesChain(node, chain)) try out.append(node);
+        return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
+    }
+
+    pub fn remove(self: Self) void {
+        for (self.nodes) |node| if (node.parent) |p| _ = p.removeChild(node);
+    }
+
+    pub fn empty(self: Self) void {
+        for (self.nodes) |node| node.clearChildren();
     }
 
     /// `.find(selector)`: descendants of every matched node that match
@@ -257,8 +360,5 @@ test "Selection.find scopes to matched nodes' descendants" {
 }
 
 fn freeTree(allocator: mem.Allocator, node: *dom.Node) void {
-    for (node.children.items) |child| freeTree(allocator, child);
-    node.children.deinit();
-    node.attrs.deinit();
-    allocator.destroy(node);
+    dom.destroyTree(allocator, node);
 }
