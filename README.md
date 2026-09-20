@@ -63,30 +63,67 @@ you'd use [cheerio](https://cheerio.js.org/)'s `$`:
 const std = @import("std");
 const zhtml = @import("zhtml");
 const el = zhtml.dsl.el;
+const $ = zhtml.@"$";
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
     // Build the tree at comptime, type-checked as you write it.
-    const spec = comptime el("div", .{ .id = "app" }, .{
-        el("p", .{ .class = "greeting" }, .{"Hello, "}),
-        el("p", .{ .class = "greeting loud" }, .{"world!"}),
+    const spec = comptime el("div", .{ .id = "post" }, .{
+        el("h2", .{ .class = "title" }, .{"old title"}),
+        el("p", .{ .class = "subtitle" }, .{"the subtitle"}),
+        el("a", .{ .href = "/one" }, .{"One"}),
+        el("a", .{ .href = "/two" }, .{"Two"}),
     });
     const root = try zhtml.dsl.render(allocator, spec);
 
-    // Query it like cheerio's `$(html)`.
-    var loud = try zhtml.select(allocator, root, ".loud");
-    defer loud.deinit();
-    const message = try loud.text();
-    defer allocator.free(message);
-    std.debug.print("{s}\n", .{message}); // "world!"
+    // zhtml.load binds bare `$(...)` calls to this tree, mirroring
+    // `const $ = cheerio.load(html)`.
+    zhtml.load(allocator, root);
+
+    // $('h2.title').text('Hello there!');
+    _ = $("h2.title").text(.{"Hello there!"});
+
+    // $('h2').addClass('welcome');
+    _ = $("h2").addClass("welcome");
+
+    // ('.post').find('.subtitle').text();
+    var found = try $("#post").find(".subtitle");
+    defer found.deinit();
+    const subtitle = try found.getText();
+    defer allocator.free(subtitle);
+
+    // $('a').each((i, el) => { const $el = $(el); ... });
+    $("a").each(struct {
+        fn call(i: usize, node: *zhtml.dom.Node) void {
+            var wrapped = $(node);
+            defer wrapped.deinit();
+            const text = wrapped.getText() catch return;
+            defer std.heap.page_allocator.free(text);
+            std.debug.print("{d}: {s} -> {s}\n", .{ i, text, wrapped.attr("href").? });
+        }
+    }.call);
 }
 ```
 
+**Zig has no function overloading or capturing closures**, so two things
+here differ slightly from JS cheerio: `.text(...)` takes a comptime tuple to
+distinguish getter (`.text(.{})`) from setter (`.text(.{"value"})`) calls —
+`getText()` is a plain alias for the getter when you don't want to write
+`.{}`. And `$` reads the tree set by the most recent `zhtml.load()` call
+rather than closing over it, so only one document is "active" at a time; for
+multiple documents, use `zhtml.select(allocator, root, selector)` and
+`Selection.fromNode(allocator, node)` directly instead of `$`.
+
 `Selection` supports the common chainable cheerio methods: `.find(selector)`,
-`.text()`, `.attr(name)`, `.html()`, `.first()`, `.eq(index)`, and `.each(fn)`.
-Selectors support tag names, `.class`, `#id`, `*`, compound selectors
-(`div.row#main`), and descendant combinators (`div p.item`).
+`.text(...)`/`.getText()`, `.attr(name)`, `.html()`, `.addClass(name)`,
+`.removeClass(name)`, `.first()`, `.eq(index)`, and `.each(fn)`. Selectors
+support tag names, `.class`, `#id`, `*`, compound selectors (`div.row#main`),
+and descendant combinators (`div p.item`).
+
+`dom.Node` also exposes the standard DOM traversal properties as methods:
+`.tagName()`, `.parentNode()`, `.previousSibling()`, `.nextSibling()`,
+`.nodeValue()`, `.firstChild()`, `.lastChild()`, and `.childNodes()`.
 
 ## License
 

@@ -12,6 +12,12 @@ pub const dom = @import("dom.zig");
 pub const dsl = @import("dsl.zig");
 pub const select = @import("select.zig").select;
 pub const Selection = @import("select.zig").Selection;
+/// `zhtml.load(allocator, root)`, mirroring `cheerio.load(html)`: sets the
+/// document that bare `$(...)` calls (see below) operate on.
+pub const load = @import("select.zig").load;
+/// The cheerio-style `$(...)` call. Requires `load()` to have been called
+/// first. See `select.zig`'s `@"$"` doc comment for the full contract.
+pub const @"$" = @import("select.zig").@"$";
 
 test {
     _ = @import("dom.zig");

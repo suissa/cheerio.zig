@@ -86,7 +86,7 @@ test "el/render builds a tree matching the spec" {
     });
 
     const root = try render(allocator, spec);
-    defer freeTree(allocator, root);
+    defer dom.Node.destroyTree(allocator, root);
 
     try std.testing.expectEqualStrings("div", root.tag);
     try std.testing.expectEqualStrings("greeting", root.attr("class").?);
@@ -99,9 +99,3 @@ test "el/render builds a tree matching the spec" {
     try std.testing.expectEqualStrings("Hello, world!", full_text);
 }
 
-fn freeTree(allocator: mem.Allocator, node: *dom.Node) void {
-    for (node.children.items) |child| freeTree(allocator, child);
-    node.children.deinit();
-    node.attrs.deinit();
-    allocator.destroy(node);
-}

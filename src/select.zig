@@ -92,6 +92,13 @@ fn collectMatches(allocator: mem.Allocator, node: *dom.Node, chain: []const Comp
     }
 }
 
+/// The comptime-computed return type of `Selection.text`: a plain string
+/// when called as a getter (`.text(.{})`), or `Selection` (for chaining)
+/// when called as a setter (`.text(.{value})`).
+fn TextReturn(comptime ArgsT: type) type {
+    return if (@typeInfo(ArgsT).@"struct".fields.len == 0) anyerror![]const u8 else Selection;
+}
+
 /// A jQuery/cheerio-style wrapper around a set of matched nodes, supporting
 /// the same chainable, batch-oriented API: `$(selector).find(...).text()`.
 pub const Selection = struct {
@@ -125,8 +132,24 @@ pub const Selection = struct {
         return Self{ .allocator = self.allocator, .nodes = out };
     }
 
-    /// `.text()`: the concatenated text content of every matched node.
-    pub fn text(self: Self) ![]const u8 {
+    /// `.text()` / `.text(value)`: cheerio-style getter/setter overloaded on
+    /// argument count via a comptime tuple, since Zig has no true function
+    /// overloading. Call as `sel.text(.{})` to read, `sel.text(.{"new text"})`
+    /// to write (mutates every matched node and returns `self` for chaining,
+    /// just like jQuery/cheerio's `.text(value)`).
+    pub fn text(self: Self, args: anytype) TextReturn(@TypeOf(args)) {
+        const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+        if (fields.len == 0) {
+            return self.getText();
+        } else {
+            const value: []const u8 = args[0];
+            for (self.nodes) |node| node.setText(self.allocator, value) catch {};
+            return self;
+        }
+    }
+
+    /// The getter half of `.text()`, also usable directly.
+    pub fn getText(self: Self) ![]const u8 {
         var buf = ArrayList(u8).init(self.allocator);
         for (self.nodes) |node| {
             const t = try node.textContent(self.allocator);
@@ -140,6 +163,20 @@ pub const Selection = struct {
     pub fn attr(self: Self, name: []const u8) ?[]const u8 {
         if (self.nodes.len == 0) return null;
         return self.nodes[0].attr(name);
+    }
+
+    /// `.addClass(name)`: adds `name` to every matched node's class list.
+    /// Returns `self` for chaining, matching cheerio's `.addClass()`.
+    pub fn addClass(self: Self, class: []const u8) Self {
+        for (self.nodes) |node| node.addClass(self.allocator, class) catch {};
+        return self;
+    }
+
+    /// `.removeClass(name)`: removes `name` from every matched node's class
+    /// list. Returns `self` for chaining.
+    pub fn removeClass(self: Self, class: []const u8) Self {
+        for (self.nodes) |node| node.removeClass(self.allocator, class) catch {};
+        return self;
     }
 
     /// `.html()`: the serialized outer HTML of the first matched node.
@@ -173,8 +210,19 @@ pub const Selection = struct {
     }
 
     /// `.each(callback)`, matching cheerio's `(index, node) => void` iteration.
+    /// Inside the callback, wrap `node` with `$(node)` (or `select.fromNode`)
+    /// to get a `Selection` for chained cheerio-style calls on that element.
     pub fn each(self: Self, comptime callback: fn (usize, *dom.Node) void) void {
         for (self.nodes, 0..) |node, i| callback(i, node);
+    }
+
+    /// Wraps a single, already-known node in a one-element `Selection`,
+    /// matching cheerio's `$(el)` re-wrap of a raw element (e.g. inside
+    /// `.each((i, el) => $(el).text())`).
+    pub fn fromNode(allocator: mem.Allocator, node: *dom.Node) Selection {
+        const out = allocator.alloc(*dom.Node, 1) catch return Selection{ .allocator = allocator, .nodes = &.{} };
+        out[0] = node;
+        return Selection{ .allocator = allocator, .nodes = out };
     }
 };
 
@@ -201,6 +249,45 @@ pub fn select(allocator: mem.Allocator, root: *dom.Node, selector: []const u8) !
     return Selection{ .allocator = allocator, .nodes = try out.toOwnedSlice() };
 }
 
+/// The "loaded document" that `$` (see below) queries against, mirroring
+/// what `const $ = cheerio.load(html)` closes over in JS. Zig has no
+/// closures that capture runtime state into a free function, so instead
+/// `load` stashes the document here and the free function `@"$"` reads it
+/// back — the same one-document-at-a-time tradeoff `libxml2`/BeautifulSoup-
+/// style module-level APIs make. For multiple concurrent documents, use
+/// `select`/`Selection.fromNode` directly instead of `$`.
+const Doc = struct {
+    allocator: mem.Allocator,
+    root: *dom.Node,
+};
+var current_doc: ?Doc = null;
+
+/// Sets the document that bare `$(...)` calls operate against, matching
+/// cheerio's `const $ = cheerio.load(html)`. `root` is typically built with
+/// `dsl.render`.
+pub fn load(allocator: mem.Allocator, root: *dom.Node) void {
+    current_doc = Doc{ .allocator = allocator, .root = root };
+}
+
+/// The cheerio-style `$(...)` entry point. Call `load()` first.
+///
+/// - `$(selector: []const u8)`: selects descendants (and the root itself)
+///   of the loaded document matching the CSS selector, e.g. `$("h2.title")`.
+/// - `$(node: *dom.Node)`: re-wraps an already-known node in a `Selection`,
+///   e.g. `$(el)` inside an `.each((i, el) => ...)` callback.
+///
+/// Errors are swallowed into an empty `Selection` (mirroring cheerio's
+/// exception-free chaining); use `select`/`Selection.fromNode` directly if
+/// you need to observe them.
+pub fn @"$"(arg: anytype) Selection {
+    const doc = current_doc orelse @panic("zhtml.load(allocator, root) must be called before using $");
+    if (@TypeOf(arg) == *dom.Node) {
+        return Selection.fromNode(doc.allocator, arg);
+    }
+    const selector: []const u8 = arg;
+    return select(doc.allocator, doc.root, selector) catch Selection{ .allocator = doc.allocator, .nodes = &.{} };
+}
+
 const dsl = @import("dsl.zig");
 
 test "select matches tag, class, and id" {
@@ -211,7 +298,7 @@ test "select matches tag, class, and id" {
         dsl.el("span", .{}, .{"ignored"}),
     });
     const root = try dsl.render(allocator, spec);
-    defer freeTree(allocator, root);
+    defer dom.Node.destroyTree(allocator, root);
 
     var byTag = try select(allocator, root, "p");
     defer byTag.deinit();
@@ -220,7 +307,7 @@ test "select matches tag, class, and id" {
     var byClass = try select(allocator, root, ".loud");
     defer byClass.deinit();
     try std.testing.expectEqual(@as(usize, 1), byClass.length());
-    const t = try byClass.text();
+    const t = try byClass.text(.{});
     defer allocator.free(t);
     try std.testing.expectEqualStrings("World", t);
 
@@ -244,21 +331,82 @@ test "Selection.find scopes to matched nodes' descendants" {
         }),
     });
     const root = try dsl.render(allocator, spec);
-    defer freeTree(allocator, root);
+    defer dom.Node.destroyTree(allocator, root);
 
     var section = try select(allocator, root, "#a");
     defer section.deinit();
     var p = try section.find("p");
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 1), p.length());
-    const t = try p.text();
+    const t = try p.text(.{});
     defer allocator.free(t);
     try std.testing.expectEqualStrings("one", t);
 }
 
-fn freeTree(allocator: mem.Allocator, node: *dom.Node) void {
-    for (node.children.items) |child| freeTree(allocator, child);
-    node.children.deinit();
-    node.attrs.deinit();
-    allocator.destroy(node);
+test "Selection.text(.{value}) sets text and returns self for chaining" {
+    const allocator = std.testing.allocator;
+    const spec = comptime dsl.el("h2", .{ .class = "title" }, .{"old"});
+    const root = try dsl.render(allocator, spec);
+    defer dom.Node.destroyTree(allocator, root);
+
+    var h2 = try select(allocator, root, "h2.title");
+    defer h2.deinit();
+    _ = h2.text(.{"Hello there!"});
+
+    const t = try h2.text(.{});
+    defer allocator.free(t);
+    try std.testing.expectEqualStrings("Hello there!", t);
 }
+
+test "Selection.addClass / removeClass" {
+    // addClass/removeClass allocate new attribute values; use an arena
+    // rather than fighting the leak checker over an intentional
+    // free-the-whole-tree-at-once ownership model (see dom.zig's note).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const spec = comptime dsl.el("h2", .{}, .{"hi"});
+    const root = try dsl.render(allocator, spec);
+
+    var h2 = try select(allocator, root, "h2");
+    defer h2.deinit();
+    _ = h2.addClass("welcome");
+    try std.testing.expect(root.hasClass("welcome"));
+    _ = h2.removeClass("welcome");
+    try std.testing.expect(!root.hasClass("welcome"));
+}
+
+test "$(selector) and $(el) inside .each, cheerio-style" {
+    const allocator = std.testing.allocator;
+    const spec = comptime dsl.el("div", .{}, .{
+        dsl.el("a", .{ .href = "/one" }, .{"One"}),
+        dsl.el("a", .{ .href = "/two" }, .{"Two"}),
+    });
+    const root = try dsl.render(allocator, spec);
+    defer dom.Node.destroyTree(allocator, root);
+
+    load(allocator, root);
+    var links = @"$"("a");
+    defer links.deinit();
+    try std.testing.expectEqual(@as(usize, 2), links.length());
+
+    links.each(struct {
+        fn call(i: usize, el: *dom.Node) void {
+            var wrapped = @"$"(el);
+            defer wrapped.deinit();
+            const t = wrapped.getText() catch unreachable;
+            defer std.testing.allocator.free(t);
+            if (i == 0) {
+                std.testing.expectEqualStrings("One", t) catch unreachable;
+                std.testing.expectEqualStrings("/one", wrapped.attr("href").?) catch unreachable;
+            } else {
+                std.testing.expectEqualStrings("Two", t) catch unreachable;
+            }
+        }
+    }.call);
+
+    var title = @"$"("h2.title"); // no h2 in this tree: matches empty, not an error
+    defer title.deinit();
+    try std.testing.expectEqual(@as(usize, 0), title.length());
+}
+
