@@ -7,6 +7,7 @@ This is a work in progress, spec compliant, HTML parser built with [Zig](https:/
 - [x] Tokenizer (missing a few edge cases)
 - [ ] Parser (in progress)
 - [ ] JavaScript DOM API support
+- [x] cheerio-style comptime DSL + CSS selector query API (`dsl`/`select`)
 
 See the [CHANGELOG.md](changelog) for detailed information on past changes.
 
@@ -51,6 +52,41 @@ though the `Tokenizer` is meant to be used in conjunction with the `Parser`.
 ## Parser
 
 Work in progress. Check back later.
+
+## The cheerio-style DSL
+
+Independent of the spec tokenizer/parser above, `zhtml.dsl` and `zhtml.select`
+provide a small, comptime-checked way to build a tree and query it the way
+you'd use [cheerio](https://cheerio.js.org/)'s `$`:
+
+```zig
+const std = @import("std");
+const zhtml = @import("zhtml");
+const el = zhtml.dsl.el;
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    // Build the tree at comptime, type-checked as you write it.
+    const spec = comptime el("div", .{ .id = "app" }, .{
+        el("p", .{ .class = "greeting" }, .{"Hello, "}),
+        el("p", .{ .class = "greeting loud" }, .{"world!"}),
+    });
+    const root = try zhtml.dsl.render(allocator, spec);
+
+    // Query it like cheerio's `$(html)`.
+    var loud = try zhtml.select(allocator, root, ".loud");
+    defer loud.deinit();
+    const message = try loud.text();
+    defer allocator.free(message);
+    std.debug.print("{s}\n", .{message}); // "world!"
+}
+```
+
+`Selection` supports the common chainable cheerio methods: `.find(selector)`,
+`.text()`, `.attr(name)`, `.html()`, `.first()`, `.eq(index)`, and `.each(fn)`.
+Selectors support tag names, `.class`, `#id`, `*`, compound selectors
+(`div.row#main`), and descendant combinators (`div p.item`).
 
 ## License
 
