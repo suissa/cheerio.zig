@@ -1,9 +1,44 @@
 const std = @import("std");
 const mem = std.mem;
 const builtin = std.builtin;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const StringHashMap = std.hash_map.StringHashMap;
-const LinearFifo = std.fifo.LinearFifo;
+/// Minimal dynamic FIFO queue, replacing the since-removed std.fifo.LinearFifo.
+fn SimpleFifo(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        items: ArrayList(T),
+        head: usize = 0,
+
+        pub fn init(allocator: mem.Allocator) Self {
+            return Self{ .items = ArrayList(T).init(allocator) };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.items.deinit();
+        }
+
+        pub fn writeItem(self: *Self, item: T) !void {
+            try self.items.append(item);
+        }
+
+        pub fn readItem(self: *Self) ?T {
+            if (self.head >= self.items.items.len) return null;
+            const item = self.items.items[self.head];
+            self.head += 1;
+            if (self.head == self.items.items.len) {
+                self.items.shrinkAndFree(0);
+                self.head = 0;
+            }
+            return item;
+        }
+
+        pub fn count(self: Self) usize {
+            return self.items.items.len - self.head;
+        }
+    };
+}
 
 const Token = @import("token.zig").Token;
 const ParseError = @import("parse_error.zig").ParseError;
@@ -102,12 +137,12 @@ pub const Tokenizer = struct {
     // See https://github.com/ziglang/zig/issues/5820
     const ParseErrorIntType = std.meta.Int(builtin.Signedness.unsigned, @sizeOf(anyerror) * 8);
 
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
     state: State = .Data,
     returnState: ?State = null,
     // TODO: This could potentially use .Static if we can guarantee some maximum number of tokens emitted at a time
-    backlog: LinearFifo(Token, .Dynamic),
-    errorQueue: LinearFifo(ParseErrorIntType, .Dynamic),
+    backlog: SimpleFifo(Token),
+    errorQueue: SimpleFifo(ParseErrorIntType),
     // denotes if contents have been heap allocated (from a file)
     allocated: bool,
     filename: []const u8,
@@ -124,11 +159,11 @@ pub const Tokenizer = struct {
     namedCharacterReferenceTable: StringHashMap([]const u8),
 
     /// Create a new {{Tokenizer}} instance using a file.
-    pub fn initWithFile(allocator: *mem.Allocator, filename: []const u8) !Tokenizer {
-        var contents = try std.fs.cwd().readFileAlloc(allocator, filename, std.math.maxInt(usize));
+    pub fn initWithFile(io: std.Io, allocator: mem.Allocator, filename: []const u8) !Tokenizer {
+        const contents = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .unlimited);
         var tokenizer = try Tokenizer.initWithString(allocator, contents);
-        tokenizer.backlog = LinearFifo(Token, .Dynamic).init(allocator);
-        tokenizer.errorQueue = LinearFifo(ParseErrorIntType, .Dynamic).init(allocator);
+        tokenizer.backlog = SimpleFifo(Token).init(allocator);
+        tokenizer.errorQueue = SimpleFifo(ParseErrorIntType).init(allocator);
         tokenizer.filename = filename;
         tokenizer.allocated = true;
         tokenizer.temporaryBuffer = ArrayList(u8).init(allocator);
@@ -137,13 +172,13 @@ pub const Tokenizer = struct {
     }
 
     /// Create a new {{Tokenizer}} instance using a string.
-    pub fn initWithString(allocator: *mem.Allocator, str: []const u8) !Tokenizer {
+    pub fn initWithString(allocator: mem.Allocator, str: []const u8) !Tokenizer {
         return Tokenizer{
             .allocator = allocator,
             .allocated = false,
-            .backlog = LinearFifo(Token, .Dynamic).init(allocator.*),
-            .errorQueue = LinearFifo(ParseErrorIntType, .Dynamic).init(allocator.*),
-            .temporaryBuffer = ArrayList(u8).init(allocator.*),
+            .backlog = SimpleFifo(Token).init(allocator),
+            .errorQueue = SimpleFifo(ParseErrorIntType).init(allocator),
+            .temporaryBuffer = ArrayList(u8).init(allocator),
             .namedCharacterReferenceTable = buildNamedCharacterReferenceTable(allocator),
             .currentToken = IncompleteToken.init(allocator),
             .filename = "",
@@ -303,7 +338,7 @@ pub const Tokenizer = struct {
                                 return ParseError.UnexpectedQuestionMarkInsteadOfTagName;
                             },
                             else => {
-                                if (std.ascii.isAlpha(next_char)) {
+                                if (std.ascii.isAlphabetic(next_char)) {
                                     self.currentToken.create(.StartTag);
                                     self.state = .TagName;
                                     self.reconsume = true;
@@ -327,7 +362,7 @@ pub const Tokenizer = struct {
                         if (next_char == '>') {
                             self.state = .Data;
                             return ParseError.MissingEndTagName;
-                        } else if (std.ascii.isAlpha(next_char)) {
+                        } else if (std.ascii.isAlphabetic(next_char)) {
                             self.currentToken.create(.EndTag);
                             self.state = .TagName;
                             self.reconsume = true;
@@ -364,7 +399,7 @@ pub const Tokenizer = struct {
                                 return ParseError.UnexpectedNullCharacter;
                             },
                             else => {
-                                var lowered = std.ascii.toLower(next_char);
+                                const lowered = std.ascii.toLower(next_char);
                                 self.currentToken.tokenData.append(lowered) catch unreachable;
                             },
                         }
@@ -375,7 +410,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.9 RCDATA less-than sign state
                 .RCDATALessThanSign => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '/') {
                         self.temporaryBuffer.shrinkAndFree(0);
                         self.state = .RCDATAEndTagOpen;
@@ -388,8 +423,8 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.10 RCDATA end tag open state
                 .RCDATAEndTagOpen => {
-                    var next_char = self.nextChar();
-                    if (next_char != null and std.ascii.isAlpha(next_char.?)) {
+                    const next_char = self.nextChar();
+                    if (next_char != null and std.ascii.isAlphabetic(next_char.?)) {
                         self.currentToken.create(.EndTag);
                         self.reconsume = true;
                         self.state = .RCDATA;
@@ -451,7 +486,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.12 RAWTEXT less-than sign state
                 .RAWTEXTLessThanSign => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '/') {
                         self.temporaryBuffer.shrinkAndFree(0);
                         self.state = .RAWTEXTEndTagOpen;
@@ -464,8 +499,8 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.13 RAWTEXT end tag open state
                 .RAWTEXTEndTagOpen => {
-                    var next_char = self.nextChar();
-                    if (next_char != null and std.ascii.isAlpha(next_char.?)) {
+                    const next_char = self.nextChar();
+                    if (next_char != null and std.ascii.isAlphabetic(next_char.?)) {
                         self.currentToken.create(.EndTag);
                         self.reconsume = true;
                         self.state = .RAWTEXTEndTagName;
@@ -551,8 +586,8 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.16 Script data end tag open state
                 .ScriptDataEndTagOpen => {
-                    var next_char = self.nextChar();
-                    if (next_char != null and std.ascii.isAlpha(next_char.?)) {
+                    const next_char = self.nextChar();
+                    if (next_char != null and std.ascii.isAlphabetic(next_char.?)) {
                         self.currentToken.create(.EndTag);
                         self.reconsume = true;
                         self.state = .ScriptDataEndTagName;
@@ -614,7 +649,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.18 Script data escape start state
                 .ScriptDataEscapeStart => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '-') {
                         self.state = .ScriptDataEscapeStartDash;
                         self.emitToken(Token{ .Character = .{ .data = '-' } });
@@ -626,7 +661,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.19 Script data escape start dash state
                 .ScriptDataEscapeStartDash => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '-') {
                         self.state = .ScriptDataEscapedDashDash;
                         self.emitToken(Token{ .Character = .{ .data = '-' } });
@@ -722,11 +757,11 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.23 Script data escaped less-than sign state
                 .ScriptDataEscapedLessThanSign => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '/') {
                         self.temporaryBuffer.shrinkAndFree(0);
                         self.state = .ScriptDataEscapedEndTagOpen;
-                    } else if (next_char != null and std.ascii.isAlpha(next_char.?)) {
+                    } else if (next_char != null and std.ascii.isAlphabetic(next_char.?)) {
                         self.temporaryBuffer.shrinkAndFree(0);
                         self.reconsume = true;
                         self.state = .ScriptDataDoubleEscapeStart;
@@ -741,8 +776,8 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.24 Script data escaped end tag open state
                 .ScriptDataEscapedEndTagOpen => {
-                    var next_char = self.nextChar();
-                    if (next_char != null and std.ascii.isAlpha(next_char.?)) {
+                    const next_char = self.nextChar();
+                    if (next_char != null and std.ascii.isAlphabetic(next_char.?)) {
                         self.currentToken.create(.EndTag);
                         self.reconsume = true;
                         self.state = .ScriptDataEscapedEndTagName;
@@ -815,8 +850,8 @@ pub const Tokenizer = struct {
                                 self.emitToken(Token{ .Character = .{ .data = next_char } });
                                 return self.popQueuedErrorOrToken();
                             },
-                            else => if (std.ascii.isAlpha(next_char)) {
-                                var lowered = std.ascii.toLower(next_char);
+                            else => if (std.ascii.isAlphabetic(next_char)) {
+                                const lowered = std.ascii.toLower(next_char);
                                 self.temporaryBuffer.append(lowered) catch unreachable;
                                 self.emitToken(Token{ .Character = .{ .data = lowered } });
                                 return self.popQueuedErrorOrToken();
@@ -921,7 +956,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.30 Script data double escaped less-than sign state
                 .ScriptDataDoubleEscapedLessThanSign => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '/') {
                         self.temporaryBuffer.shrinkAndFree(0);
                         self.state = .ScriptDataDoubleEscapeEnd;
@@ -945,8 +980,8 @@ pub const Tokenizer = struct {
                                 self.emitToken(Token{ .Character = .{ .data = next_char } });
                                 return self.popQueuedErrorOrToken();
                             },
-                            else => if (std.ascii.isAlpha(next_char)) {
-                                var lowered = std.ascii.toLower(next_char);
+                            else => if (std.ascii.isAlphabetic(next_char)) {
+                                const lowered = std.ascii.toLower(next_char);
                                 self.temporaryBuffer.append(lowered) catch unreachable;
                                 self.emitToken(Token{ .Character = .{ .data = lowered } });
                                 return self.popQueuedErrorOrToken();
@@ -1343,7 +1378,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.47 Comment less-than sign bang state
                 .CommentLessThanSignBang => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '-') {
                         self.state = .CommentLessThanSignBangDash;
                     } else {
@@ -1353,7 +1388,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.48 Comment less-than sign bang dash state
                 .CommentLessThanSignBangDash => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '-') {
                         self.state = .CommentLessThanSignBangDashDash;
                     } else {
@@ -1363,7 +1398,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.49 Comment less-than sign bang dash dash state
                 .CommentLessThanSignBangDashDash => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char == null or next_char.? == '>') {
                         self.reconsume = true;
                         self.state = .CommentEnd;
@@ -1375,7 +1410,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.50 Comment end dash state
                 .CommentEndDash => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == '-') {
                         self.state = .CommentEnd;
                     } else if (next_char == null) {
@@ -1538,7 +1573,7 @@ pub const Tokenizer = struct {
                                 return self.popQueuedErrorOrToken();
                             },
                             else => {
-                                var next_six = self.peekN(6);
+                                const next_six = self.peekN(6);
                                 if (std.ascii.eqlIgnoreCase(next_six, "PUBLIC")) {
                                     self.index += 6;
                                     self.column += 6;
@@ -1968,7 +2003,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.70 CDATA section bracket state
                 .CDATASectionBracket => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and next_char.? == ']') {
                         self.state = .CDATASectionEnd;
                     } else {
@@ -2004,7 +2039,7 @@ pub const Tokenizer = struct {
                 .CharacterReference => {
                     self.temporaryBuffer.shrinkAndFree(0);
                     self.temporaryBuffer.append('&') catch unreachable;
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and std.ascii.isAlphanumeric(next_char.?)) {
                         self.reconsume = true;
                         self.state = .NamedCharacterReference;
@@ -2084,7 +2119,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.74 Ambiguous ampersand state
                 .AmbiguousAmpersand => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and std.ascii.isAlphanumeric(next_char.?)) {
                         if (self.inAttributeState()) {
                             self.currentToken.currentAttributeValue.append(next_char.?) catch unreachable;
@@ -2104,7 +2139,7 @@ pub const Tokenizer = struct {
                 // 13.2.5.75 Numeric character reference state
                 .NumericCharacterReference => {
                     self.characterReferenceCode = 0;
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and (next_char.? == 'X' or next_char.? == 'x')) {
                         self.temporaryBuffer.append(next_char.?) catch unreachable;
                         self.state = .HexadecimalCharacterReferenceStart;
@@ -2115,8 +2150,8 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.76 Hexadecimal character reference start state
                 .HexadecimalCharacterReferenceStart => {
-                    var next_char = self.nextChar();
-                    if (next_char != null and std.ascii.isXDigit(next_char.?)) {
+                    const next_char = self.nextChar();
+                    if (next_char != null and std.ascii.isHex(next_char.?)) {
                         self.reconsume = true;
                         self.state = .HexadecimalCharacterReference;
                     } else {
@@ -2128,7 +2163,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.77 Decimal character reference start state
                 .DecimalCharacterReferenceStart => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and std.ascii.isDigit(next_char.?)) {
                         self.reconsume = true;
                         self.state = .DecimalCharacterReference;
@@ -2147,7 +2182,7 @@ pub const Tokenizer = struct {
                             self.characterReferenceCode *= 16;
                             self.characterReferenceCode += (next_char - 0x0030);
                             continue;
-                        } else if (std.ascii.isXDigit(next_char)) {
+                        } else if (std.ascii.isHex(next_char)) {
                             self.characterReferenceCode *= 16;
                             if (std.ascii.isUpper(next_char)) {
                                 self.characterReferenceCode += (next_char - 0x0037);
@@ -2167,7 +2202,7 @@ pub const Tokenizer = struct {
                 },
                 // 13.2.5.79 Decimal character reference state
                 .DecimalCharacterReference => {
-                    var next_char = self.nextChar();
+                    const next_char = self.nextChar();
                     if (next_char != null and std.ascii.isDigit(next_char.?)) {
                         self.characterReferenceCode *= 10;
                         self.characterReferenceCode += (next_char.? - 0x0030);
@@ -2206,7 +2241,7 @@ pub const Tokenizer = struct {
                             }
                         },
                     }
-                    const codepoint = @intCast(u21, self.characterReferenceCode);
+                    const codepoint: u21 = @intCast(self.characterReferenceCode);
                     self.temporaryBuffer.shrinkAndFree(0);
                     self.flushCodepointAsCharacterReference(codepoint);
 
@@ -2229,14 +2264,14 @@ pub const Tokenizer = struct {
     }
 
     fn hasQueuedErrorOrToken(self: *Self) bool {
-        return self.errorQueue.count > 0 or self.backlog.count > 0;
+        return self.errorQueue.count() > 0 or self.backlog.count() > 0;
     }
 
     /// Must be certain that an error or token exists in the queue, see hasQueuedErrorOrToken
     fn popQueuedErrorOrToken(self: *Self) ParseError!Token {
         // check errors first
         if (self.errorQueue.readItem()) |err_int| {
-            return @errSetCast(ParseError, @intToError(err_int));
+            return @errorCast(@errorFromInt(err_int));
         }
         if (self.backlog.readItem()) |token| {
             return token;
@@ -2262,7 +2297,7 @@ pub const Tokenizer = struct {
     }
 
     pub fn emitError(self: *Self, err: ParseError) void {
-        self.errorQueue.writeItem(@errorToInt(err)) catch unreachable;
+        self.errorQueue.writeItem(@intFromError(err)) catch unreachable;
     }
 
     fn inAttributeState(self: Self) bool {
@@ -2273,7 +2308,7 @@ pub const Tokenizer = struct {
     }
 
     fn flushTemporaryBufferAsCharacterReference(self: *Self) void {
-        const characterReference = self.temporaryBuffer.toOwnedSlice();
+        const characterReference = self.temporaryBuffer.toOwnedSlice() catch unreachable;
         if (self.inAttributeState()) {
             self.currentToken.currentAttributeValue.appendSlice(characterReference) catch unreachable;
         } else {
@@ -2289,9 +2324,9 @@ pub const Tokenizer = struct {
     fn flushCodepointAsCharacterReference(self: *Self, codepoint: u21) void {
         if (self.inAttributeState()) {
             var char: [4]u8 = undefined;
-            var len = std.unicode.utf8Encode(codepoint, char[0..]) catch unreachable;
+            const len = std.unicode.utf8Encode(codepoint, char[0..]) catch unreachable;
             self.temporaryBuffer.appendSlice(char[0..len]) catch unreachable;
-            self.currentToken.currentAttributeValue.appendSlice(self.temporaryBuffer.toOwnedSlice()) catch unreachable;
+            self.currentToken.currentAttributeValue.appendSlice(self.temporaryBuffer.toOwnedSlice() catch unreachable) catch unreachable;
         } else {
             self.temporaryBuffer.shrinkAndFree(0);
             self.emitToken(Token{ .Character = .{ .data = codepoint } });
@@ -2311,7 +2346,7 @@ pub const Tokenizer = struct {
             return null; // EOF
         }
 
-        var c = self.contents[self.index];
+        const c = self.contents[self.index];
         if (c == '\n') {
             self.line += 1;
             self.column = 0;
@@ -2351,7 +2386,7 @@ pub const Tokenizer = struct {
             return self.contents[0..0];
         }
         const start = if (self.reconsume) self.index - 1 else self.index;
-        const end = std.math.min(self.contents.len, start + n);
+        const end = @min(self.contents.len, start + n);
         return self.contents[start..end];
     }
 
@@ -2377,23 +2412,23 @@ pub const IncompleteToken = struct {
     currentAttributeName: ArrayList(u8),
     currentAttributeValue: ArrayList(u8),
     attributes: StringHashMap([]const u8),
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
 
     // TODO: Might be nice to take a *Tokenizer instead, but that would require
     //       https://github.com/ziglang/zig/issues/2765 because the Tokenizer.init fn's
     //       would need to be able to get a pointer to the struct value that will
     //       be returned. This would allow us to remove the *Tokenizer parameters from
     //       the IncompleteToken functions that currently take one.
-    pub fn init(allocator: *mem.Allocator) Self {
+    pub fn init(allocator: mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .tokenData = ArrayList(u8).init(allocator.*),
-            .publicIdentifier = ArrayList(u8).init(allocator.*),
-            .systemIdentifier = ArrayList(u8).init(allocator.*),
-            .commentData = ArrayList(u8).init(allocator.*),
-            .currentAttributeName = ArrayList(u8).init(allocator.*),
-            .currentAttributeValue = ArrayList(u8).init(allocator.*),
-            .attributes = StringHashMap([]const u8).init(allocator.*),
+            .tokenData = ArrayList(u8).init(allocator),
+            .publicIdentifier = ArrayList(u8).init(allocator),
+            .systemIdentifier = ArrayList(u8).init(allocator),
+            .commentData = ArrayList(u8).init(allocator),
+            .currentAttributeName = ArrayList(u8).init(allocator),
+            .currentAttributeValue = ArrayList(u8).init(allocator),
+            .attributes = StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -2422,7 +2457,7 @@ pub const IncompleteToken = struct {
         if (isDuplicate) {
             tokenizer.emitError(ParseError.DuplicateAttribute);
         } else {
-            try self.attributes.putNoClobber(self.currentAttributeName.toOwnedSlice(), self.currentAttributeValue.toOwnedSlice());
+            try self.attributes.putNoClobber(try self.currentAttributeName.toOwnedSlice(), try self.currentAttributeValue.toOwnedSlice());
         }
     }
 
@@ -2441,16 +2476,16 @@ pub const IncompleteToken = struct {
         switch (self.tokenType.?) {
             .DOCTYPE => {
                 token = Token{ .DOCTYPE = .{
-                    .name = self.tokenData.toOwnedSlice(),
-                    .publicIdentifier = if (!self.publicIdentifierMissing) self.publicIdentifier.toOwnedSlice() else null,
-                    .systemIdentifier = if (!self.systemIdentifierMissing) self.systemIdentifier.toOwnedSlice() else null,
+                    .name = self.tokenData.toOwnedSlice() catch unreachable,
+                    .publicIdentifier = if (!self.publicIdentifierMissing) self.publicIdentifier.toOwnedSlice() catch unreachable else null,
+                    .systemIdentifier = if (!self.systemIdentifierMissing) self.systemIdentifier.toOwnedSlice() catch unreachable else null,
                     .forceQuirks = self.forceQuirks,
                 } };
             },
             .StartTag => {
                 self.flushAttribute(tokenizer) catch unreachable;
                 token = Token{ .StartTag = .{
-                    .name = self.tokenData.toOwnedSlice(),
+                    .name = self.tokenData.toOwnedSlice() catch unreachable,
                     .selfClosing = self.selfClosing,
                     .attributes = self.attributes.clone() catch unreachable,
                 } };
@@ -2458,14 +2493,14 @@ pub const IncompleteToken = struct {
             .EndTag => {
                 self.flushAttribute(tokenizer) catch unreachable;
                 token = Token{ .EndTag = .{
-                    .name = self.tokenData.toOwnedSlice(),
+                    .name = self.tokenData.toOwnedSlice() catch unreachable,
                     .selfClosing = self.selfClosing,
                     .attributes = self.attributes.clone() catch unreachable,
                 } };
             },
             .Comment => {
                 token = Token{ .Comment = .{
-                    .data = self.commentData.toOwnedSlice(),
+                    .data = self.commentData.toOwnedSlice() catch unreachable,
                 } };
             },
             .Character => unreachable,

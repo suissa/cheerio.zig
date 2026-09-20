@@ -1,8 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
-const Token = @import("zhtml/token").Token;
-const Tokenizer = @import("zhtml/tokenizer").Tokenizer;
-const ParseError = @import("zhtml/parse_error").ParseError;
+const zhtml = @import("zhtml");
+const Token = zhtml.Token;
+const Tokenizer = zhtml.Tokenizer;
+const ParseError = zhtml.ParseError;
 
 // FIXME: This whole file is rather sloppy with memory
 // TODO: Preprocessing the input stream (spec 12.2.3.5)
@@ -77,21 +78,20 @@ test "test4.test" {
 }
 
 fn runTestFile(file_path: []const u8) !void {
-    var allocator = std.heap.page_allocator;
-    var contents = try std.fs.cwd().readFileAlloc(allocator, file_path, std.math.maxInt(usize));
+    const allocator = std.heap.page_allocator;
+    const contents = try std.Io.Dir.cwd().readFileAlloc(testing.io, file_path, allocator, .unlimited);
     defer allocator.free(contents);
-    var parser = std.json.Parser.init(allocator, true);
-    defer parser.deinit();
-    var tree = try parser.parse(contents);
-    defer tree.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, contents, .{});
+    defer parsed.deinit();
+    const tree = parsed.value;
 
-    var tests = tree.root.Object.get("tests").?.Array;
-    outer: for (tests.items) |test_obj, i| {
+    const tests = tree.object.get("tests").?.array;
+    outer: for (tests.items, 0..) |test_obj, i| {
         var arena = std.heap.ArenaAllocator.init(allocator);
-        var arena_allocator = arena.allocator();
+        const arena_allocator = arena.allocator();
         defer arena.deinit();
 
-        const description = test_obj.Object.get("description").?.String;
+        const description = test_obj.object.get("description").?.string;
         for (ignored_tests) |ignored_test| {
             if (std.mem.eql(u8, description, ignored_test)) {
                 std.log.warn("Ignoring test '{s}'\n", .{description});
@@ -99,17 +99,17 @@ fn runTestFile(file_path: []const u8) !void {
             }
         }
 
-        const input = test_obj.Object.get("input").?.String;
+        const input = test_obj.object.get("input").?.string;
         std.debug.print("\n===================\n{}: {s}\n", .{ i, description });
         std.debug.print("\n{s}\n", .{input});
-        const expected_tokens = try parseOutput(&arena_allocator, test_obj.Object.get("output").?.Array);
+        const expected_tokens = try parseOutput(arena_allocator, test_obj.object.get("output").?.array);
         defer expected_tokens.deinit();
 
         const expected_errors = blk: {
-            if (test_obj.Object.get("errors")) |errors| {
-                break :blk try parseErrors(&arena_allocator, errors.Array);
+            if (test_obj.object.get("errors")) |errors| {
+                break :blk try parseErrors(arena_allocator, errors.array);
             } else {
-                break :blk std.ArrayList(ErrorInfo).init(arena_allocator);
+                break :blk std.array_list.Managed(ErrorInfo).init(arena_allocator);
             }
         };
         defer expected_errors.deinit();
@@ -122,19 +122,19 @@ fn runTestFile(file_path: []const u8) !void {
         }
         std.debug.print("===================\n", .{});
 
-        if (test_obj.Object.get("initialStates")) |initial_states_obj| {
-            const initial_states = initial_states_obj.Array;
+        if (test_obj.object.get("initialStates")) |initial_states_obj| {
+            const initial_states = initial_states_obj.array;
             for (initial_states.items) |initial_state_val| {
-                std.debug.print("------------------\nwith initial state: {s}\n------------------\n", .{initial_state_val.String});
-                try runTest(&arena_allocator, input, expected_tokens.items, expected_errors.items, parseInitialState(initial_state_val.String).?);
+                std.debug.print("------------------\nwith initial state: {s}\n------------------\n", .{initial_state_val.string});
+                try runTest(arena_allocator, input, expected_tokens.items, expected_errors.items, parseInitialState(initial_state_val.string).?);
             }
         } else {
-            try runTest(&arena_allocator, input, expected_tokens.items, expected_errors.items, null);
+            try runTest(arena_allocator, input, expected_tokens.items, expected_errors.items, null);
         }
     }
 }
 
-fn runTest(allocator: *std.mem.Allocator, input: []const u8, expected_tokens: []Token, expected_errors: []ErrorInfo, initial_state: ?Tokenizer.State) !void {
+fn runTest(allocator: std.mem.Allocator, input: []const u8, expected_tokens: []Token, expected_errors: []ErrorInfo, initial_state: ?Tokenizer.State) !void {
     var tokenizer = try Tokenizer.initWithString(allocator, input);
     if (initial_state) |_initial_state| {
         tokenizer.state = _initial_state;
@@ -142,8 +142,8 @@ fn runTest(allocator: *std.mem.Allocator, input: []const u8, expected_tokens: []
     var num_tokens: usize = 0;
     var num_errors: usize = 0;
     while (true) {
-        var token = tokenizer.nextToken() catch |err| {
-            std.log.err("{} at line: {}, column: {}\n", .{ err, tokenizer.line, tokenizer.column });
+        const token = tokenizer.nextToken() catch |err| {
+            std.debug.print("expected error: {} at line: {}, column: {}\n", .{ err, tokenizer.line, tokenizer.column });
             try testing.expect(expected_errors.len > 0);
             var error_found = false;
             const id = ErrorInfo.errorToSpecId(err);
@@ -172,59 +172,59 @@ fn runTest(allocator: *std.mem.Allocator, input: []const u8, expected_tokens: []
     try testing.expectEqual(expected_errors.len, num_errors);
 }
 
-fn parseOutput(allocator: *std.mem.Allocator, outputs: anytype) !std.ArrayList(Token) {
-    var tokens = try std.ArrayList(Token).initCapacity(allocator.*, outputs.items.len);
+fn parseOutput(allocator: std.mem.Allocator, outputs: std.json.Array) !std.array_list.Managed(Token) {
+    var tokens = try std.array_list.Managed(Token).initCapacity(allocator, outputs.items.len);
     for (outputs.items) |output_obj| {
-        const output_array = output_obj.Array.items;
-        const token_type_str = output_array[0].String;
+        const output_array = output_obj.array.items;
+        const token_type_str = output_array[0].string;
 
         if (std.mem.eql(u8, token_type_str, "DOCTYPE")) {
             // ["DOCTYPE", name, public_id, system_id, correctness]
             try tokens.append(Token{
                 .DOCTYPE = .{
-                    .name = if (output_array[1] == .Null) null else output_array[1].String,
+                    .name = if (output_array[1] == .null) null else output_array[1].string,
                     // public_id and system_id are either strings or null.
-                    .publicIdentifier = if (output_array[2] == .Null) null else output_array[2].String,
-                    .systemIdentifier = if (output_array[3] == .Null) null else output_array[3].String,
+                    .publicIdentifier = if (output_array[2] == .null) null else output_array[2].string,
+                    .systemIdentifier = if (output_array[3] == .null) null else output_array[3].string,
                     // correctness is either true or false; true corresponds to the force-quirks flag being false, and vice-versa.
-                    .forceQuirks = !output_array[4].Bool,
+                    .forceQuirks = !output_array[4].bool,
                 },
             });
         } else if (std.mem.eql(u8, token_type_str, "StartTag")) {
             // ["StartTag", name, {attributes}*, true*]
             // ["StartTag", name, {attributes}]
-            const attributes_obj = output_array[2].Object;
+            const attributes_obj = output_array[2].object;
             var it = attributes_obj.iterator();
             var token = Token{
                 .StartTag = .{
-                    .name = output_array[1].String,
+                    .name = output_array[1].string,
                     // When the self-closing flag is set, the StartTag array has true as its fourth entry.
                     // When the flag is not set, the array has only three entries for backwards compatibility.
-                    .selfClosing = if (output_array.len == 3) false else output_array[3].Bool,
-                    .attributes = std.StringHashMap([]const u8).init(allocator.*),
+                    .selfClosing = if (output_array.len == 3) false else output_array[3].bool,
+                    .attributes = std.StringHashMap([]const u8).init(allocator),
                 },
             };
             while (it.next()) |attribute_entry| {
-                try token.StartTag.attributes.put(attribute_entry.key_ptr.*, attribute_entry.value_ptr.*.String);
+                try token.StartTag.attributes.put(attribute_entry.key_ptr.*, attribute_entry.value_ptr.*.string);
             }
             try tokens.append(token);
         } else if (std.mem.eql(u8, token_type_str, "EndTag")) {
             // ["EndTag", name]
             try tokens.append(Token{
                 .EndTag = .{
-                    .name = output_array[1].String,
-                    .attributes = std.StringHashMap([]const u8).init(allocator.*),
+                    .name = output_array[1].string,
+                    .attributes = std.StringHashMap([]const u8).init(allocator),
                 },
             });
         } else if (std.mem.eql(u8, token_type_str, "Comment")) {
             // ["Comment", data]
             try tokens.append(Token{
-                .Comment = .{ .data = output_array[1].String },
+                .Comment = .{ .data = output_array[1].string },
             });
         } else if (std.mem.eql(u8, token_type_str, "Character")) {
             // ["Character", data]
             // All adjacent character tokens are coalesced into a single ["Character", data] token.
-            var chars_utf8 = try std.unicode.Utf8View.init(output_array[1].String);
+            const chars_utf8 = try std.unicode.Utf8View.init(output_array[1].string);
             var chars_iterator = chars_utf8.iterator();
             while (chars_iterator.nextCodepoint()) |codepoint| {
                 try tokens.append(Token{
@@ -236,18 +236,18 @@ fn parseOutput(allocator: *std.mem.Allocator, outputs: anytype) !std.ArrayList(T
     return tokens;
 }
 
-pub fn parseErrors(allocator: *std.mem.Allocator, errors: anytype) !std.ArrayList(ErrorInfo) {
-    var error_infos = try std.ArrayList(ErrorInfo).initCapacity(allocator.*, errors.items.len);
+pub fn parseErrors(allocator: std.mem.Allocator, errors: std.json.Array) !std.array_list.Managed(ErrorInfo) {
+    var error_infos = try std.array_list.Managed(ErrorInfo).initCapacity(allocator, errors.items.len);
     for (errors.items) |error_obj| {
-        const code = error_obj.Object.get("code").?.String;
+        const code = error_obj.object.get("code").?.string;
         // skip these for now
         // TODO: Errors from preprocessing the input stream
         if (std.mem.eql(u8, code, "control-character-in-input-stream")
             or std.mem.eql(u8, code, "noncharacter-in-input-stream")) {
             continue;
         }
-        const line = @intCast(usize, error_obj.Object.get("line").?.Integer);
-        const col = @intCast(usize, error_obj.Object.get("col").?.Integer);
+        const line: usize = @intCast(error_obj.object.get("line").?.integer);
+        const col: usize = @intCast(error_obj.object.get("col").?.integer);
         error_infos.appendAssumeCapacity(ErrorInfo{
             .id = code,
             .line = line,
@@ -258,7 +258,7 @@ pub fn parseErrors(allocator: *std.mem.Allocator, errors: anytype) !std.ArrayLis
 }
 
 fn parseInitialState(str: []const u8) ?Tokenizer.State {
-    const map = std.ComptimeStringMap(Tokenizer.State, .{
+    const map = std.StaticStringMap(Tokenizer.State).initComptime(.{
         .{ "Data state", Tokenizer.State.Data },
         .{ "PLAINTEXT state", Tokenizer.State.PLAINTEXT },
         .{ "RCDATA state", Tokenizer.State.RCDATA },

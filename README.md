@@ -10,28 +10,37 @@ This is a work in progress, spec compliant, HTML parser built with [Zig](https:/
 
 See the [CHANGELOG.md](changelog) for detailed information on past changes.
 
+## Building
+
+Requires Zig 0.16.0.
+
+```sh
+zig build test           # run the library's unit tests
+zig build test-html5lib  # run the tokenizer against the html5lib-tests suite
+```
+
 ## Tokenizer
 
 The `Tokenizer` struct provides a (mostly) fully featured HTML tokenizer built according to the [WHATGW HTML Spec](https://html.spec.whatwg.org/multipage/parsing.html#tokenization). It is a streaming tokenizer which takes as input a full document, processes the document character by character, and emits both `Token`s and `ParseError`s. An example usage of it by itself could look like this:
 
 ```zig
 const std = @import("std");
-const Tokenizer = @import("zhtml/tokenizer.zig").Tokenizer;
+const zhtml = @import("zhtml");
+const Token = zhtml.Token;
+const Tokenizer = zhtml.Tokenizer;
 
-pub fn main() void {
-    var allocator = std.heap.page_allocator;
-    var tokenizer = try Tokenizer.initWithFile(alloc, "./test.html");
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+    var tokenizer = try Tokenizer.initWithString(allocator, "<p>Hello, world!</p>");
     while (true) {
-        var token = self.tokenizer.nextToken() catch |err| {
-            std.debug.warn("{} (line: {}, column: {})\n", .{ err, tokenizer.line, tokenizer.column });
+        const token = tokenizer.nextToken() catch |err| {
+            std.debug.print("{} (line: {}, column: {})\n", .{ err, tokenizer.line, tokenizer.column });
             continue;
         };
 
-        if (token) |tok| {
-            switch (tok) {
-                Token.EndOfFile => break,
-                else => std.debug.warn("{}\n", .{ tok });
-            }
+        switch (token) {
+            .EndOfFile => break,
+            else => std.debug.print("{}\n", .{token}),
         }
     }
 }

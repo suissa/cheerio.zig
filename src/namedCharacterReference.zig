@@ -1,7 +1,7 @@
 const std = @import("std");
 const StringHashMap = std.StringHashMap;
 
-pub fn buildNamedCharacterReferenceTable(allocator: *std.mem.Allocator) StringHashMap([]const u8) {
+pub fn buildNamedCharacterReferenceTable(allocator: std.mem.Allocator) StringHashMap([]const u8) {
     @setEvalBranchQuota(3000);
 
     const pairs = .{
@@ -2238,7 +2238,7 @@ pub fn buildNamedCharacterReferenceTable(allocator: *std.mem.Allocator) StringHa
         .{"CounterClockwiseContourIntegral;", "∳"}
     };
 
-    var hashmap = StringHashMap([]const u8).init(allocator.*);
+    var hashmap = StringHashMap([]const u8).init(allocator);
 
     inline for (pairs) |pair| {
         _ = hashmap.put(pair.@"0", pair.@"1") catch unreachable;

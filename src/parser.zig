@@ -1,6 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const node = @import("node.zig");
 
 const Document = node.Document;
@@ -41,7 +41,7 @@ pub const Parser = struct {
         AfterAfterFrameset,
     };
 
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
     tokenizer: *Tokenizer,
     stackOfOpenElements: ArrayList(Element),
     insertionMode: InsertionMode,
@@ -49,8 +49,8 @@ pub const Parser = struct {
     lastToken: Token = undefined,
     context: ?Element = null,
 
-    pub fn init(allocator: *mem.Allocator, tokenizer: *Tokenizer) Parser {
-        var stackOfOpenElements = ArrayList(Element).init(allocator);
+    pub fn init(allocator: mem.Allocator, tokenizer: *Tokenizer) Parser {
+        const stackOfOpenElements = ArrayList(Element).init(allocator);
         return Parser {
             .allocator = allocator,
             .tokenizer = tokenizer,
@@ -70,7 +70,7 @@ pub const Parser = struct {
             }
         }
 
-        var elementStack = self.stackOfOpenElements.items;
+        const elementStack = self.stackOfOpenElements.items;
         return elementStack[elementStack.len - 1];
     }
 
@@ -108,7 +108,7 @@ pub const Parser = struct {
                         tok == Token.Character) or
                     
                     // If the adjusted current node is a MathML annotation-xml element and the token is a start tag whose tag name is "svg"
-                    (mem.eql(u8, self.adjustedCurrentNode().name, "annotation-xml") and
+                    (mem.eql(u8, self.adjustedCurrentNode().localName, "annotation-xml") and
                         tok == Token.StartTag and
                         mem.eql(u8, tok.StartTag.name.?, "svg")) or
 
@@ -163,7 +163,7 @@ pub const Parser = struct {
                     document.parseErrors.append(ParseError.Default) catch unreachable;
                 }
 
-                var doctype = node.DocumentType {
+                const doctype = node.DocumentType {
                     .name = if (tok.name == null) "" else tok.name.?,
                     .publicId = if (tok.publicIdentifier == null) "" else tok.publicIdentifier.?,
                     .systemId = if (tok.systemIdentifier == null) "" else tok.systemIdentifier.?,
@@ -272,7 +272,9 @@ pub const Parser = struct {
             },
             Token.StartTag => |tok| {
                 if (mem.eql(u8, tok.name.?, "html")) {
-                    var element = self.createElementForToken(document, token);
+                    const element = self.createElementForToken(document, token);
+                    self.stackOfOpenElements.append(element) catch unreachable;
+                    self.insertionMode = .BeforeHead;
                 }
             },
             else => {}
@@ -280,11 +282,10 @@ pub const Parser = struct {
     }
 
     fn createElementForToken(self: Self, document: *Document, token: Token) Element {
-        var local_name = token.StartTag.name.?;
-        var is = token.StartTag.attributes.get("is");
-        var definition: ?Element = null; // TODO: Look up custom element definition
+        const local_name = token.StartTag.name.?;
+        const definition: ?Element = null; // TODO: Look up custom element definition
 
-        var will_execute_script = definition != null and self.context == null;
+        const will_execute_script = definition != null and self.context == null;
         if (will_execute_script) {
             // will execute script
             document.throwOnDynamicMarkupInsertionCounter += 1;
@@ -292,6 +293,11 @@ pub const Parser = struct {
             // TODO: Push a new element queue onto document's relevant agent's custom element reactions stack.
         }
 
-        var element = Element.init();
+        var element = Element.init(self.allocator, local_name, document.*, .HTML);
+        var it = token.StartTag.attributes.iterator();
+        while (it.next()) |entry| {
+            element.attributes.put(entry.key_ptr.*, entry.value_ptr.*) catch unreachable;
+        }
+        return element;
     }
 };
