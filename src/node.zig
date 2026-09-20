@@ -1,6 +1,6 @@
 const std = @import("std");
 const Token = @import("token.zig").Token;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const StringHashMap = std.hash_map.StringHashMap;
 const ParseError = @import("parse_error.zig").ParseError;
 
@@ -17,7 +17,7 @@ pub const Node = union(enum) {
 pub const Document = struct {
     const Self = @This();
 
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     title: ?[]const u8 = null,
     dir: ?[]const u8 = null,
     quirksMode: bool = false,
@@ -36,7 +36,7 @@ pub const Document = struct {
     children: ArrayList(Node),
     throwOnDynamicMarkupInsertionCounter: usize = 0,
 
-    pub fn init(allocator: *std.mem.Allocator) Document {
+    pub fn init(allocator: std.mem.Allocator) Document {
         return Document{
             .allocator = allocator,
             .images = ArrayList(Element).init(allocator),
@@ -111,17 +111,18 @@ pub const Element = struct {
     document: Document,
     attributes: StringHashMap([]const u8),
 
-    pub fn init(local_name: []const u8, document: Document, namespace: Namespace, token: ?Token) Element {
-        var definition: ?Element = null; // TODO: Look up custom element definition
-
+    pub fn init(allocator: std.mem.Allocator, local_name: []const u8, document: Document, namespace: Namespace) Element {
         return Element{
-            .name = local_name,
-            .document = document,
             .namespace = namespace,
-            .attributes = attributes,
             .prefix = null,
-            .is = null,
-            .synchronousCustomElements = false,
+            .localName = local_name,
+            .tagName = local_name,
+            .id = "",
+            .className = "",
+            .classList = ArrayList([]const u8).init(allocator),
+            .slot = "",
+            .document = document,
+            .attributes = StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -130,20 +131,29 @@ pub const Element = struct {
     }
 
     pub fn hasAttributes(self: Self) bool {
-        return self.attributes.items().len > 0;
+        return self.attributes.count() > 0;
     }
 
-    pub fn getAttributeNames(self: Self) [][]const u8 {}
+    pub fn getAttributeNames(self: Self, allocator: std.mem.Allocator) ![][]const u8 {
+        var names = try ArrayList([]const u8).initCapacity(allocator, self.attributes.count());
+        var it = self.attributes.keyIterator();
+        while (it.next()) |key| {
+            try names.append(key.*);
+        }
+        return names.toOwnedSlice();
+    }
 
     pub fn isInNamespace(self: Self, namespace: Namespace) bool {
         return self.namespace == namespace;
     }
 
     pub fn isHTMLIntegrationPoint(self: Self) bool {
+        _ = self;
         return false;
     }
 
     pub fn isMathMLTextIntegrationPoint(self: Self) bool {
+        _ = self;
         return false;
     }
 };

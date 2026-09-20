@@ -7,8 +7,18 @@ This is a work in progress, spec compliant, HTML parser built with [Zig](https:/
 - [x] Tokenizer (missing a few edge cases)
 - [ ] Parser (in progress)
 - [ ] JavaScript DOM API support
+- [x] cheerio-style comptime DSL + CSS selector query API (`dsl`/`select`)
 
 See the [CHANGELOG.md](changelog) for detailed information on past changes.
+
+## Building
+
+Requires Zig 0.16.0.
+
+```sh
+zig build test           # run the library's unit tests
+zig build test-html5lib  # run the tokenizer against the html5lib-tests suite
+```
 
 ## Tokenizer
 
@@ -16,22 +26,22 @@ The `Tokenizer` struct provides a (mostly) fully featured HTML tokenizer built a
 
 ```zig
 const std = @import("std");
-const Tokenizer = @import("zhtml/tokenizer.zig").Tokenizer;
+const zhtml = @import("zhtml");
+const Token = zhtml.Token;
+const Tokenizer = zhtml.Tokenizer;
 
-pub fn main() void {
-    var allocator = std.heap.page_allocator;
-    var tokenizer = try Tokenizer.initWithFile(alloc, "./test.html");
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+    var tokenizer = try Tokenizer.initWithString(allocator, "<p>Hello, world!</p>");
     while (true) {
-        var token = self.tokenizer.nextToken() catch |err| {
-            std.debug.warn("{} (line: {}, column: {})\n", .{ err, tokenizer.line, tokenizer.column });
+        const token = tokenizer.nextToken() catch |err| {
+            std.debug.print("{} (line: {}, column: {})\n", .{ err, tokenizer.line, tokenizer.column });
             continue;
         };
 
-        if (token) |tok| {
-            switch (tok) {
-                Token.EndOfFile => break,
-                else => std.debug.warn("{}\n", .{ tok });
-            }
+        switch (token) {
+            .EndOfFile => break,
+            else => std.debug.print("{}\n", .{token}),
         }
     }
 }
@@ -42,6 +52,41 @@ though the `Tokenizer` is meant to be used in conjunction with the `Parser`.
 ## Parser
 
 Work in progress. Check back later.
+
+## The cheerio-style DSL
+
+Independent of the spec tokenizer/parser above, `zhtml.dsl` and `zhtml.select`
+provide a small, comptime-checked way to build a tree and query it the way
+you'd use [cheerio](https://cheerio.js.org/)'s `$`:
+
+```zig
+const std = @import("std");
+const zhtml = @import("zhtml");
+const el = zhtml.dsl.el;
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    // Build the tree at comptime, type-checked as you write it.
+    const spec = comptime el("div", .{ .id = "app" }, .{
+        el("p", .{ .class = "greeting" }, .{"Hello, "}),
+        el("p", .{ .class = "greeting loud" }, .{"world!"}),
+    });
+    const root = try zhtml.dsl.render(allocator, spec);
+
+    // Query it like cheerio's `$(html)`.
+    var loud = try zhtml.select(allocator, root, ".loud");
+    defer loud.deinit();
+    const message = try loud.text();
+    defer allocator.free(message);
+    std.debug.print("{s}\n", .{message}); // "world!"
+}
+```
+
+`Selection` supports the common chainable cheerio methods: `.find(selector)`,
+`.text()`, `.attr(name)`, `.html()`, `.first()`, `.eq(index)`, and `.each(fn)`.
+Selectors support tag names, `.class`, `#id`, `*`, compound selectors
+(`div.row#main`), and descendant combinators (`div p.item`).
 
 ## License
 

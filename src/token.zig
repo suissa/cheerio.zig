@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const StringHashMap = std.hash_map.StringHashMap;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 
 /// Represents a token to be emitted by the {{Tokenizer}}.
 pub const Token = union(enum) {

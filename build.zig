@@ -1,45 +1,37 @@
-const Builder = @import("std").build.Builder;
+const std = @import("std");
 
-pub fn build(b: *Builder) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const zhtml_module = b.addModule("zhtml", .{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
-    const exe = b.addExecutable("build", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.install();
+    const lib_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_lib_tests = b.addRunArtifact(lib_tests);
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&run_lib_tests.step);
 
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
-
-    var html5lib_tests = b.addTest("test/tokenizer-html5lib.zig");
-    html5lib_tests.setBuildMode(mode);
-    html5lib_tests.addPackagePath("zhtml/token", "src/token.zig");
-    html5lib_tests.addPackagePath("zhtml/parse_error", "src/parse_error.zig");
-    html5lib_tests.addPackagePath("zhtml/tokenizer", "src/tokenizer.zig");
+    const html5lib_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/tokenizer-html5lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhtml", .module = zhtml_module },
+            },
+        }),
+    });
+    const run_html5lib_tests = b.addRunArtifact(html5lib_tests);
     const html5lib_test_step = b.step("test-html5lib", "Run the tests from html5lib/html5lib-tests");
-    html5lib_test_step.dependOn(&html5lib_tests.step);
+    html5lib_test_step.dependOn(&run_html5lib_tests.step);
 }
-
-// pub fn build(b: *Builder) void {
-//     const mode = b.standardReleaseOptions();
-//     const lib = b.addStaticLibrary("zhtml", "src/main.zig");
-//     lib.setBuildMode(mode);
-//     lib.install();
-
-//     var main_tests = b.addTest("src/main.zig");
-//     main_tests.setBuildMode(mode);
-
-//     const test_step = b.step("test", "Run library tests");
-//     test_step.dependOn(&main_tests.step);
-// }
