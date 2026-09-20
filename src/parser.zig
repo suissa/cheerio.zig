@@ -128,7 +128,7 @@ pub const Parser = struct {
                             self.handleBeforeHtmlInsertionMode(&document, tok);
                         },
                         else => {
-                            std.debug.warn("{}\n", .{ self.insertionMode });
+                            std.debug.print("{}\n", .{ self.insertionMode });
                             break;
                         }
                     }
