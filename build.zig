@@ -18,8 +18,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_lib_tests = b.addRunArtifact(lib_tests);
-    const test_step = b.step("test", "Run library tests");
+    const test_step = b.step("test", "Run library unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    const semantic_behavior_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/semantic_behavior_e2e.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhtml", .module = zhtml_module },
+            },
+        }),
+    });
+    const run_semantic_behavior_tests = b.addRunArtifact(semantic_behavior_tests);
+    const semantic_behavior_step = b.step(
+        "test-semantic-behavior",
+        "Run SemanticBehavior end-to-end tests",
+    );
+    semantic_behavior_step.dependOn(&run_semantic_behavior_tests.step);
 
     const html5lib_tests = b.addTest(.{
         .root_module = b.createModule(.{
