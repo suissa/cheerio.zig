@@ -215,7 +215,7 @@ fn isVoidElement(tag: []const u8) bool {
 }
 
 test "load owns the source buffer and parses raw text elements" {
-    var input = try std.testing.allocator.dupe(u8, "<SCRIPT>if (a < b) x();</SCRIPT><IMG src=x/y>");
+    const input = try std.testing.allocator.dupe(u8, "<SCRIPT>if (a < b) x();</SCRIPT><IMG src=x/y>");
     defer std.testing.allocator.free(input);
 
     var document = try load(std.testing.allocator, input);
