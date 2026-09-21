@@ -3,25 +3,19 @@ const mem = std.mem;
 const ArrayList = std.array_list.Managed;
 const StringHashMap = std.StringHashMap;
 
-/// A minimal, general-purpose DOM tree used by the `dsl` and `select` modules.
-/// Unlike `node.zig` (which mirrors the exact WHATWG DOM shape for the spec
-/// parser), this is a small tree optimized for building markup at comptime
-/// and querying it with CSS-like selectors, in the spirit of cheerio's `$`.
 pub const Node = struct {
     const Self = @This();
 
-    /// The tag name, e.g. "div". The sentinel tag `"#text"` marks a text node.
     tag: []const u8,
     allocator: mem.Allocator,
     attrs: StringHashMap([]const u8),
     children: ArrayList(*Node),
-    /// Only set (and only meaningful) on `"#text"` nodes.
     text: ?[]const u8 = null,
     parent: ?*Node = null,
 
     pub fn init(allocator: mem.Allocator, tag: []const u8) *Node {
         const node = allocator.create(Node) catch unreachable;
-        node.* = Node{
+        node.* = .{
             .tag = tag,
             .allocator = allocator,
             .attrs = StringHashMap([]const u8).init(allocator),
@@ -66,15 +60,13 @@ pub const Node = struct {
 
     pub fn hasClass(self: *const Self, class: []const u8) bool {
         const classes = self.attr("class") orelse return false;
-        var it = mem.tokenizeScalar(u8, classes, ' ');
+        var it = mem.tokenizeAny(u8, classes, " \t\n\r\x0c");
         while (it.next()) |c| {
             if (mem.eql(u8, c, class)) return true;
         }
         return false;
     }
 
-    /// Concatenates this node's own text plus all descendant text nodes'
-    /// content, matching cheerio/jQuery's `.text()` semantics.
     pub fn textContent(self: *const Self, allocator: mem.Allocator) ![]const u8 {
         var buf = ArrayList(u8).init(allocator);
         try self.collectText(&buf);
@@ -86,12 +78,9 @@ pub const Node = struct {
             try buf.appendSlice(self.text orelse "");
             return;
         }
-        for (self.children.items) |child| {
-            try child.collectText(buf);
-        }
+        for (self.children.items) |child| try child.collectText(buf);
     }
 
-    /// Serializes this node (and its descendants) back to an HTML string.
     pub fn outerHtml(self: *const Self, allocator: mem.Allocator) ![]const u8 {
         var buf = ArrayList(u8).init(allocator);
         try self.writeHtml(&buf);
@@ -106,7 +95,7 @@ pub const Node = struct {
 
     fn writeHtml(self: *const Self, buf: *ArrayList(u8)) !void {
         if (self.isText()) {
-            try buf.appendSlice(self.text orelse "");
+            try appendEscaped(buf, self.text orelse "", false);
             return;
         }
 
@@ -118,52 +107,41 @@ pub const Node = struct {
             try buf.append(' ');
             try buf.appendSlice(entry.key_ptr.*);
             try buf.appendSlice("=\"");
-            try buf.appendSlice(entry.value_ptr.*);
+            try appendEscaped(buf, entry.value_ptr.*, true);
             try buf.append('"');
         }
         try buf.append('>');
 
-        for (self.children.items) |child| {
-            try child.writeHtml(buf);
-        }
+        for (self.children.items) |child| try child.writeHtml(buf);
 
-        try buf.appendSlice("</");
-        try buf.appendSlice(self.tag);
-        try buf.append('>');
+        if (!isVoidElement(self.tag)) {
+            try buf.appendSlice("</");
+            try buf.appendSlice(self.tag);
+            try buf.append('>');
+        }
+    }
+
+    fn appendEscaped(buf: *ArrayList(u8), value: []const u8, attribute: bool) !void {
+        for (value) |c| {
+            switch (c) {
+                '&' => try buf.appendSlice("&amp;"),
+                '<' => try buf.appendSlice("&lt;"),
+                '>' => try buf.appendSlice("&gt;"),
+                '"' => if (attribute) try buf.appendSlice("&quot;") else try buf.append(c),
+                else => try buf.append(c),
+            }
+        }
     }
 };
 
-test "Node.textContent concatenates nested text" {
-    const allocator = std.testing.allocator;
-    const div = Node.init(allocator, "div");
-    defer freeTree(allocator, div);
-
-    const p = Node.init(allocator, "p");
-    div.appendChild(p);
-    const t1 = Node.init(allocator, "#text");
-    t1.text = "Hello, ";
-    p.appendChild(t1);
-    const t2 = Node.init(allocator, "#text");
-    t2.text = "world!";
-    p.appendChild(t2);
-
-    const text = try div.textContent(allocator);
-    defer allocator.free(text);
-    try std.testing.expectEqualStrings("Hello, world!", text);
-}
-
-test "Node.hasClass" {
-    const allocator = std.testing.allocator;
-    const div = Node.init(allocator, "div");
-    defer freeTree(allocator, div);
-    try div.attrs.put("class", "foo bar");
-    try std.testing.expect(div.hasClass("foo"));
-    try std.testing.expect(div.hasClass("bar"));
-    try std.testing.expect(!div.hasClass("baz"));
-}
-
-fn freeTree(allocator: mem.Allocator, node: *Node) void {
-    destroyTree(allocator, node);
+fn isVoidElement(tag: []const u8) bool {
+    return mem.eql(u8, tag, "area") or mem.eql(u8, tag, "base") or
+        mem.eql(u8, tag, "br") or mem.eql(u8, tag, "col") or
+        mem.eql(u8, tag, "embed") or mem.eql(u8, tag, "hr") or
+        mem.eql(u8, tag, "img") or mem.eql(u8, tag, "input") or
+        mem.eql(u8, tag, "link") or mem.eql(u8, tag, "meta") or
+        mem.eql(u8, tag, "param") or mem.eql(u8, tag, "source") or
+        mem.eql(u8, tag, "track") or mem.eql(u8, tag, "wbr");
 }
 
 pub fn destroyTree(allocator: mem.Allocator, node: *Node) void {
@@ -181,4 +159,39 @@ pub fn cloneTree(allocator: mem.Allocator, source: *const Node) !*Node {
     while (attrs.next()) |entry| try copy.attrs.put(entry.key_ptr.*, entry.value_ptr.*);
     for (source.children.items) |child| try copy.appendChild(try cloneTree(allocator, child));
     return copy;
+}
+
+test "Node.textContent concatenates nested text" {
+    const allocator = std.testing.allocator;
+    const div = Node.init(allocator, "div");
+    defer destroyTree(allocator, div);
+    const p = Node.init(allocator, "p");
+    div.appendChild(p);
+    const t1 = Node.init(allocator, "#text");
+    t1.text = "Hello, ";
+    p.appendChild(t1);
+    const t2 = Node.init(allocator, "#text");
+    t2.text = "world!";
+    p.appendChild(t2);
+    const text = try div.textContent(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("Hello, world!", text);
+}
+
+test "Node.hasClass accepts HTML whitespace" {
+    const allocator = std.testing.allocator;
+    const div = Node.init(allocator, "div");
+    defer destroyTree(allocator, div);
+    try div.attrs.put("class", "foo\tbar");
+    try std.testing.expect(div.hasClass("foo"));
+    try std.testing.expect(div.hasClass("bar"));
+}
+
+test "void elements are not serialized with closing tags" {
+    const allocator = std.testing.allocator;
+    const img = Node.init(allocator, "img");
+    defer destroyTree(allocator, img);
+    const html = try img.outerHtml(allocator);
+    defer allocator.free(html);
+    try std.testing.expectEqualStrings("<img>", html);
 }

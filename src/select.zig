@@ -3,6 +3,14 @@ const mem = std.mem;
 const ArrayList = std.array_list.Managed;
 const dom = @import("dom.zig");
 
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
+    }
+    return true;
+}
+
 /// A single compound selector, e.g. the `div.row#main` in `div.row#main > p`.
 /// Only tag/class/id/universal compounds are supported, joined by
 /// descendant combinators (whitespace) between compounds — enough to cover
@@ -15,7 +23,7 @@ const Compound = struct {
     fn matches(self: Compound, node: *const dom.Node) bool {
         if (node.isText()) return false;
         if (self.tag) |t| {
-            if (!mem.eql(u8, t, "*") and !mem.eql(u8, t, node.tag)) return false;
+            if (!mem.eql(u8, t, "*") and !asciiEqlIgnoreCase(t, node.tag)) return false;
         }
         if (self.id) |id| {
             if (!mem.eql(u8, node.attr("id") orelse "", id)) return false;
@@ -69,7 +77,7 @@ fn parseCompound(allocator: mem.Allocator, part: []const u8) !Compound {
 /// (going up from `node`'s parent) satisfies the remaining preceding
 /// compounds in `chain[0 .. chain.len - 1]`, in order — i.e. standard CSS
 /// descendant-combinator matching.
-fn matchesChain(node: *const dom.Node, chain: []const Compound) bool {
+fn matchesChain(node: *const dom.Node, chain: []const Compound, boundary: ?*const dom.Node) bool {
     if (chain.len == 0) return true;
     if (!chain[chain.len - 1].matches(node)) return false;
 
@@ -77,6 +85,7 @@ fn matchesChain(node: *const dom.Node, chain: []const Compound) bool {
     var ancestor = node.parent;
     while (remaining.len > 0) {
         const current = ancestor orelse return false;
+        if (boundary != null and current == boundary.?) return false;
         if (remaining[remaining.len - 1].matches(current)) {
             remaining = remaining[0 .. remaining.len - 1];
         }
@@ -85,10 +94,10 @@ fn matchesChain(node: *const dom.Node, chain: []const Compound) bool {
     return true;
 }
 
-fn collectMatches(allocator: mem.Allocator, node: *dom.Node, chain: []const Compound, out: *ArrayList(*dom.Node)) !void {
-    if (matchesChain(node, chain)) try out.append(node);
+fn collectMatches(allocator: mem.Allocator, node: *dom.Node, chain: []const Compound, out: *ArrayList(*dom.Node), boundary: ?*const dom.Node) !void {
+    if (matchesChain(node, chain, boundary)) try out.append(node);
     for (node.children.items) |child| {
-        try collectMatches(allocator, child, chain, out);
+        try collectMatches(allocator, child, chain, out, boundary);
     }
 }
 
@@ -211,8 +220,10 @@ pub const Selection = struct {
         for (self.nodes) |node| {
             const p = node.parent orelse continue;
             for (p.children.items, 0..) |candidate, i| {
-                if (candidate == node and i + 1 < p.children.items.len) {
-                    try out.append(p.children.items[i + 1]);
+                if (candidate == node) {
+                    var j = i + 1;
+                    while (j < p.children.items.len and p.children.items[j].isText()) : (j += 1) {}
+                    if (j < p.children.items.len) try out.append(p.children.items[j]);
                     break;
                 }
             }
@@ -225,8 +236,15 @@ pub const Selection = struct {
         for (self.nodes) |node| {
             const p = node.parent orelse continue;
             for (p.children.items, 0..) |candidate, i| {
-                if (candidate == node and i > 0) {
-                    try out.append(p.children.items[i - 1]);
+                if (candidate == node) {
+                    var j = i;
+                    while (j > 0) {
+                        j -= 1;
+                        if (!p.children.items[j].isText()) {
+                            try out.append(p.children.items[j]);
+                            break;
+                        }
+                    }
                     break;
                 }
             }
@@ -239,7 +257,7 @@ pub const Selection = struct {
         defer arena.deinit();
         const chain = try parseChain(arena.allocator(), selector);
         var out = ArrayList(*dom.Node).init(self.allocator);
-        for (self.nodes) |node| if (matchesChain(node, chain)) try out.append(node);
+        for (self.nodes) |node| if (matchesChain(node, chain, null)) try out.append(node);
         return Self{ .allocator = self.allocator, .nodes = try out.toOwnedSlice() };
     }
 
@@ -267,7 +285,7 @@ pub const Selection = struct {
         for (self.nodes) |root| {
             for (root.children.items) |child| {
                 var matched = ArrayList(*dom.Node).init(arena.allocator());
-                try collectMatches(arena.allocator(), child, chain, &matched);
+                try collectMatches(arena.allocator(), child, chain, &matched, root);
                 for (matched.items) |m| {
                     if (!seen.contains(m)) {
                         try seen.put(m, {});
@@ -298,7 +316,7 @@ pub fn select(allocator: mem.Allocator, root: *dom.Node, selector: []const u8) !
     var out = ArrayList(*dom.Node).init(allocator);
     var seen = std.AutoHashMap(*dom.Node, void).init(arena.allocator());
     var matched = ArrayList(*dom.Node).init(arena.allocator());
-    try collectMatches(arena.allocator(), initial.nodes[0], chain, &matched);
+    try collectMatches(arena.allocator(), initial.nodes[0], chain, &matched, null);
     for (matched.items) |m| {
         if (!seen.contains(m)) {
             try seen.put(m, {});
@@ -365,4 +383,39 @@ test "Selection.find scopes to matched nodes' descendants" {
 
 fn freeTree(allocator: mem.Allocator, node: *dom.Node) void {
     dom.destroyTree(allocator, node);
+}
+
+
+test "find does not use ancestors outside its scope" {
+    const allocator = std.testing.allocator;
+    const test_dsl = @import("dsl.zig");
+    const spec = comptime test_dsl.el("div", .{}, .{
+        test_dsl.el("section", .{}, .{test_dsl.el("p", .{}, .{"inside"})}),
+    });
+    const root = try test_dsl.render(allocator, spec);
+    defer dom.destroyTree(allocator, root);
+
+    var section = try select(allocator, root, "section");
+    defer section.deinit();
+    var result = try section.find("div p");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 0), result.length());
+}
+
+test "next skips text nodes" {
+    const allocator = std.testing.allocator;
+    const test_dsl = @import("dsl.zig");
+    const spec = comptime test_dsl.el("div", .{}, .{
+        test_dsl.el("p", .{}, .{"a"}),
+        " between ",
+        test_dsl.el("span", .{}, .{"b"}),
+    });
+    const root = try test_dsl.render(allocator, spec);
+    defer dom.destroyTree(allocator, root);
+
+    var p = try select(allocator, root, "p");
+    defer p.deinit();
+    var next_node = try p.next();
+    defer next_node.deinit();
+    try std.testing.expectEqualStrings("span", next_node.get(0).?.tag);
 }
