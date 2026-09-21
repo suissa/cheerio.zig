@@ -33,14 +33,10 @@ pub const Cheerio = Document;
 
 pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
     const root = dom.Node.init(allocator, "#root");
-    var document = Document{
-        .allocator = allocator,
-        .root = root,
-        .source = undefined,
-    };
-    errdefer document.deinit();
+    errdefer dom.destroyTree(allocator, root);
 
-    document.source = try allocator.dupe(u8, source);
+    const owned_source = try allocator.dupe(u8, source);
+    errdefer allocator.free(owned_source);
 
     var stack = ArrayList(*dom.Node).init(allocator);
     defer stack.deinit();
@@ -165,7 +161,11 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
         if (!self_closing and !isVoidElement(element.tag)) try stack.append(element);
     }
 
-    return document;
+    return .{
+        .allocator = allocator,
+        .root = root,
+        .source = owned_source,
+    };
 }
 
 fn isSpace(c: u8) bool {
