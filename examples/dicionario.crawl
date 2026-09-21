@@ -1,0 +1,28 @@
+# Dicio dictionary crawler exposed as one MCP tool.
+# The server has exactly one tool, route, and event: search.
+
+server "dicionario"
+
+transport rest
+transport ws
+transport stdio
+transport nats
+
+tool search
+route search
+event search
+
+# The only accepted request payload is:
+input json "{ \"word\": string }"
+
+# {word} is interpolated from the request payload.
+fetch "https://www.dicio.com.br/pesquisa.php?q={word}"
+
+# Extract the first dictionary result from the fetched page.
+select "#content > div.col-xs-12.col-sm-7.col-md-8.card.card-main > ul:nth-child(3) > li:nth-child(1) > a > span.list-link" to definition
+
+# Successful response.
+return json "{ \"word\": definition }"
+
+# Empty result response. The runtime substitutes {url} with the URL fetched above.
+on missing return json "{ \"word\": false, \"url\": {url} }"
