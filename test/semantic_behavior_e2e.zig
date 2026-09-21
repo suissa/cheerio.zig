@@ -34,3 +34,22 @@ test "SemanticBehavior e2e: CEP extraction contract" {
     try std.testing.expectEqualStrings("neighborhood", result.fields[1]);
     try std.testing.expectEqualStrings("locality", result.fields[2]);
 }
+
+
+test "SemanticBehavior e2e: preserves generic action property linker" {
+    const allocator = std.testing.allocator;
+    var script = try zhtml.parseCommands(
+        allocator,
+        "title = read value from <h1 class=\"title\">\n",
+    );
+    defer script.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), script.len());
+
+    const command = script.commands[0].Semantic;
+    try std.testing.expectEqualStrings("title", command.alias);
+    try std.testing.expectEqualStrings("read", command.action);
+    try std.testing.expectEqualStrings("value", command.property);
+    try std.testing.expectEqualStrings("from", command.linker);
+    try std.testing.expectEqualStrings("h1 class=\"title\"", command.selector);
+}
