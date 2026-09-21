@@ -12,6 +12,11 @@ pub const dom = @import("dom.zig");
 pub const dsl = @import("dsl.zig");
 pub const select = @import("select.zig").select;
 pub const Selection = @import("select.zig").Selection;
+pub const command = @import("command.zig");
+pub const Command = command.Command;
+pub const Script = command.Script;
+pub const CommandParseError = command.CommandParseError;
+pub const parseCommands = command.parse;
 pub const Cheerio = @import("cheerio.zig").Cheerio;
 pub const CheerioDocument = @import("cheerio.zig").Document;
 pub const load = @import("cheerio.zig").load;
@@ -21,4 +26,5 @@ test {
     _ = @import("dsl.zig");
     _ = @import("select.zig");
     _ = @import("cheerio.zig");
+    _ = @import("command.zig");
 }
