@@ -43,52 +43,52 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
     try stack.append(root);
 
     var pos: usize = 0;
-    while (pos < document.source.len) {
+    while (pos < owned_source.len) {
         const parent = stack.items[stack.items.len - 1];
 
         if (isRawTextElement(parent.tag)) {
-            const close = findClosingTag(document.source, pos, parent.tag);
-            const end = close orelse document.source.len;
+            const close = findClosingTag(owned_source, pos, parent.tag);
+            const end = close orelse owned_source.len;
             if (end > pos) {
                 const text = dom.Node.init(allocator, "#text");
-                text.text = document.source[pos..end];
+                text.text = owned_source[pos..end];
                 parent.appendChild(text);
             }
             pos = end;
             if (close == null) break;
         }
 
-        if (document.source[pos] != '<') {
+        if (owned_source[pos] != '<') {
             const start = pos;
-            while (pos < document.source.len and document.source[pos] != '<') pos += 1;
+            while (pos < owned_source.len and owned_source[pos] != '<') pos += 1;
             const text = dom.Node.init(allocator, "#text");
-            text.text = document.source[start..pos];
+            text.text = owned_source[start..pos];
             parent.appendChild(text);
             continue;
         }
 
-        if (mem.startsWith(u8, document.source[pos..], "<!--")) {
-            const end = mem.indexOf(u8, document.source[pos + 4 ..], "-->") orelse document.source.len - (pos + 4);
-            pos = if (end == document.source.len - (pos + 4)) document.source.len else pos + 4 + end + 3;
+        if (mem.startsWith(u8, owned_source[pos..], "<!--")) {
+            const end = mem.indexOf(u8, owned_source[pos + 4 ..], "-->") orelse owned_source.len - (pos + 4);
+            pos = if (end == owned_source.len - (pos + 4)) owned_source.len else pos + 4 + end + 3;
             continue;
         }
 
-        if (pos + 1 < document.source.len and document.source[pos + 1] == '/') {
+        if (pos + 1 < owned_source.len and owned_source[pos + 1] == '/') {
             pos += 2;
-            skipSpace(document.source, &pos);
+            skipSpace(owned_source, &pos);
             const name_start = pos;
-            while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
+            while (pos < owned_source.len and isNameChar(owned_source[pos])) pos += 1;
             const name_end = pos;
-            while (pos < document.source.len and document.source[pos] != '>') pos += 1;
-            if (pos < document.source.len) pos += 1;
+            while (pos < owned_source.len and owned_source[pos] != '>') pos += 1;
+            if (pos < owned_source.len) pos += 1;
 
-            if (stack.items.len > 1 and asciiEqlIgnoreCase(stack.items[stack.items.len - 1].tag, document.source[name_start..name_end])) {
+            if (stack.items.len > 1 and asciiEqlIgnoreCase(stack.items[stack.items.len - 1].tag, owned_source[name_start..name_end])) {
                 _ = stack.pop();
             } else if (stack.items.len > 1) {
                 var i = stack.items.len;
                 while (i > 1) {
                     i -= 1;
-                    if (asciiEqlIgnoreCase(stack.items[i].tag, document.source[name_start..name_end])) {
+                    if (asciiEqlIgnoreCase(stack.items[i].tag, owned_source[name_start..name_end])) {
                         stack.shrinkRetainingCapacity(i);
                         break;
                     }
@@ -98,15 +98,15 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
         }
 
         pos += 1;
-        if (pos < document.source.len and (document.source[pos] == '!' or document.source[pos] == '?')) {
-            while (pos < document.source.len and document.source[pos] != '>') pos += 1;
-            if (pos < document.source.len) pos += 1;
+        if (pos < owned_source.len and (owned_source[pos] == '!' or owned_source[pos] == '?')) {
+            while (pos < owned_source.len and owned_source[pos] != '>') pos += 1;
+            if (pos < owned_source.len) pos += 1;
             continue;
         }
 
-        skipSpace(document.source, &pos);
+        skipSpace(owned_source, &pos);
         const name_start = pos;
-        while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
+        while (pos < owned_source.len and isNameChar(owned_source[pos])) pos += 1;
         if (name_start == pos) {
             const text = dom.Node.init(allocator, "#text");
             text.text = "<";
@@ -114,44 +114,44 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
             continue;
         }
 
-        const element = dom.Node.init(allocator, document.source[name_start..pos]);
+        const element = dom.Node.init(allocator, owned_source[name_start..pos]);
         var self_closing = false;
-        while (pos < document.source.len) {
-            skipSpace(document.source, &pos);
-            if (pos >= document.source.len) break;
-            if (document.source[pos] == '>') {
+        while (pos < owned_source.len) {
+            skipSpace(owned_source, &pos);
+            if (pos >= owned_source.len) break;
+            if (owned_source[pos] == '>') {
                 pos += 1;
                 break;
             }
-            if (document.source[pos] == '/' and pos + 1 < document.source.len and document.source[pos + 1] == '>') {
+            if (owned_source[pos] == '/' and pos + 1 < owned_source.len and owned_source[pos + 1] == '>') {
                 self_closing = true;
                 pos += 2;
                 break;
             }
 
             const attr_start = pos;
-            while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
+            while (pos < owned_source.len and isNameChar(owned_source[pos])) pos += 1;
             if (attr_start == pos) {
                 pos += 1;
                 continue;
             }
-            const attr_name = document.source[attr_start..pos];
-            skipSpace(document.source, &pos);
+            const attr_name = owned_source[attr_start..pos];
+            skipSpace(owned_source, &pos);
             var value: []const u8 = "";
-            if (pos < document.source.len and document.source[pos] == '=') {
+            if (pos < owned_source.len and owned_source[pos] == '=') {
                 pos += 1;
-                skipSpace(document.source, &pos);
-                if (pos < document.source.len and (document.source[pos] == '\'' or document.source[pos] == '"')) {
-                    const quote = document.source[pos];
+                skipSpace(owned_source, &pos);
+                if (pos < owned_source.len and (owned_source[pos] == '\'' or owned_source[pos] == '"')) {
+                    const quote = owned_source[pos];
                     pos += 1;
                     const value_start = pos;
-                    while (pos < document.source.len and document.source[pos] != quote) pos += 1;
-                    value = document.source[value_start..pos];
-                    if (pos < document.source.len) pos += 1;
+                    while (pos < owned_source.len and owned_source[pos] != quote) pos += 1;
+                    value = owned_source[value_start..pos];
+                    if (pos < owned_source.len) pos += 1;
                 } else {
                     const value_start = pos;
-                    while (pos < document.source.len and document.source[pos] != '>' and !isSpace(document.source[pos])) pos += 1;
-                    value = document.source[value_start..pos];
+                    while (pos < owned_source.len and owned_source[pos] != '>' and !isSpace(owned_source[pos])) pos += 1;
+                    value = owned_source[value_start..pos];
                 }
             }
             try element.attrs.put(attr_name, value);
