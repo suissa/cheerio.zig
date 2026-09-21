@@ -4,18 +4,16 @@ const ArrayList = std.array_list.Managed;
 const dom = @import("dom.zig");
 const select_mod = @import("select.zig");
 
-/// An owned document and the Cheerio-like query entry point.
-///
-/// This intentionally keeps ownership in one object: selections are views over
-/// the document and must not outlive it, just like Cheerio selections are tied
-/// to the loaded Cheerio instance.
 pub const Document = struct {
     allocator: mem.Allocator,
     root: *dom.Node,
+    source: []u8,
 
     pub fn deinit(self: *Document) void {
         dom.destroyTree(self.allocator, self.root);
+        self.allocator.free(self.source);
         self.root = undefined;
+        self.source = undefined;
     }
 
     pub fn select(self: *const Document, selector: []const u8) !select_mod.Selection {
@@ -31,54 +29,70 @@ pub const Document = struct {
     }
 };
 
-/// Public name matching the conceptual Cheerio instance.
 pub const Cheerio = Document;
 
-/// Parse a fragment/document and return an owned Cheerio-style document.
-/// The tokenizer remains available separately for WHATWG conformance tests;
-/// this lightweight tree builder is the ergonomic DOM API used by the DSL.
 pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
     const root = dom.Node.init(allocator, "#root");
-    errdefer dom.destroyTree(allocator, root);
+    var document = Document{
+        .allocator = allocator,
+        .root = root,
+        .source = undefined,
+    };
+    errdefer document.deinit();
+
+    document.source = try allocator.dupe(u8, source);
 
     var stack = ArrayList(*dom.Node).init(allocator);
     defer stack.deinit();
     try stack.append(root);
 
     var pos: usize = 0;
-    while (pos < source.len) {
+    while (pos < document.source.len) {
         const parent = stack.items[stack.items.len - 1];
-        if (source[pos] != '<') {
+
+        if (isRawTextElement(parent.tag)) {
+            const close = findClosingTag(document.source, pos, parent.tag);
+            const end = close orelse document.source.len;
+            if (end > pos) {
+                const text = dom.Node.init(allocator, "#text");
+                text.text = document.source[pos..end];
+                parent.appendChild(text);
+            }
+            pos = end;
+            if (close == null) break;
+        }
+
+        if (document.source[pos] != '<') {
             const start = pos;
-            while (pos < source.len and source[pos] != '<') pos += 1;
+            while (pos < document.source.len and document.source[pos] != '<') pos += 1;
             const text = dom.Node.init(allocator, "#text");
-            text.text = source[start..pos];
+            text.text = document.source[start..pos];
             parent.appendChild(text);
             continue;
         }
 
-        if (mem.startsWith(u8, source[pos..], "<!--")) {
-            const end = mem.indexOf(u8, source[pos + 4..], "-->") orelse source.len - (pos + 4);
-            pos = if (end == source.len - (pos + 4)) source.len else pos + 4 + end + 3;
+        if (mem.startsWith(u8, document.source[pos..], "<!--")) {
+            const end = mem.indexOf(u8, document.source[pos + 4 ..], "-->") orelse document.source.len - (pos + 4);
+            pos = if (end == document.source.len - (pos + 4)) document.source.len else pos + 4 + end + 3;
             continue;
         }
 
-        if (pos + 1 < source.len and source[pos + 1] == '/') {
+        if (pos + 1 < document.source.len and document.source[pos + 1] == '/') {
             pos += 2;
-            skipSpace(source, &pos);
+            skipSpace(document.source, &pos);
             const name_start = pos;
-            while (pos < source.len and isNameChar(source[pos])) pos += 1;
+            while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
             const name_end = pos;
-            while (pos < source.len and source[pos] != '>') pos += 1;
-            if (pos < source.len) pos += 1;
-            if (stack.items.len > 1 and mem.eql(u8, stack.items[stack.items.len - 1].tag, source[name_start..name_end])) {
+            while (pos < document.source.len and document.source[pos] != '>') pos += 1;
+            if (pos < document.source.len) pos += 1;
+
+            if (stack.items.len > 1 and asciiEqlIgnoreCase(stack.items[stack.items.len - 1].tag, document.source[name_start..name_end])) {
                 _ = stack.pop();
             } else if (stack.items.len > 1) {
-                // HTML error recovery: close the nearest matching open tag.
                 var i = stack.items.len;
                 while (i > 1) {
                     i -= 1;
-                    if (mem.eql(u8, stack.items[i].tag, source[name_start..name_end])) {
+                    if (asciiEqlIgnoreCase(stack.items[i].tag, document.source[name_start..name_end])) {
                         stack.shrinkRetainingCapacity(i);
                         break;
                     }
@@ -88,15 +102,15 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
         }
 
         pos += 1;
-        if (pos < source.len and (source[pos] == '!' or source[pos] == '?')) {
-            while (pos < source.len and source[pos] != '>') pos += 1;
-            if (pos < source.len) pos += 1;
+        if (pos < document.source.len and (document.source[pos] == '!' or document.source[pos] == '?')) {
+            while (pos < document.source.len and document.source[pos] != '>') pos += 1;
+            if (pos < document.source.len) pos += 1;
             continue;
         }
 
-        skipSpace(source, &pos);
+        skipSpace(document.source, &pos);
         const name_start = pos;
-        while (pos < source.len and isNameChar(source[pos])) pos += 1;
+        while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
         if (name_start == pos) {
             const text = dom.Node.init(allocator, "#text");
             text.text = "<";
@@ -104,43 +118,44 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
             continue;
         }
 
-        const element = dom.Node.init(allocator, source[name_start..pos]);
+        const element = dom.Node.init(allocator, document.source[name_start..pos]);
         var self_closing = false;
-        while (pos < source.len) {
-            skipSpace(source, &pos);
-            if (pos >= source.len) break;
-            if (source[pos] == '>') {
+        while (pos < document.source.len) {
+            skipSpace(document.source, &pos);
+            if (pos >= document.source.len) break;
+            if (document.source[pos] == '>') {
                 pos += 1;
                 break;
             }
-            if (source[pos] == '/' and pos + 1 < source.len and source[pos + 1] == '>') {
+            if (document.source[pos] == '/' and pos + 1 < document.source.len and document.source[pos + 1] == '>') {
                 self_closing = true;
                 pos += 2;
                 break;
             }
+
             const attr_start = pos;
-            while (pos < source.len and isNameChar(source[pos])) pos += 1;
+            while (pos < document.source.len and isNameChar(document.source[pos])) pos += 1;
             if (attr_start == pos) {
                 pos += 1;
                 continue;
             }
-            const attr_name = source[attr_start..pos];
-            skipSpace(source, &pos);
+            const attr_name = document.source[attr_start..pos];
+            skipSpace(document.source, &pos);
             var value: []const u8 = "";
-            if (pos < source.len and source[pos] == '=') {
+            if (pos < document.source.len and document.source[pos] == '=') {
                 pos += 1;
-                skipSpace(source, &pos);
-                if (pos < source.len and (source[pos] == '\'' or source[pos] == '"')) {
-                    const quote = source[pos];
+                skipSpace(document.source, &pos);
+                if (pos < document.source.len and (document.source[pos] == '\'' or document.source[pos] == '"')) {
+                    const quote = document.source[pos];
                     pos += 1;
                     const value_start = pos;
-                    while (pos < source.len and source[pos] != quote) pos += 1;
-                    value = source[value_start..pos];
-                    if (pos < source.len) pos += 1;
+                    while (pos < document.source.len and document.source[pos] != quote) pos += 1;
+                    value = document.source[value_start..pos];
+                    if (pos < document.source.len) pos += 1;
                 } else {
                     const value_start = pos;
-                    while (pos < source.len and source[pos] != '>' and source[pos] != '/' and !isSpace(source[pos])) pos += 1;
-                    value = source[value_start..pos];
+                    while (pos < document.source.len and document.source[pos] != '>' and !isSpace(document.source[pos])) pos += 1;
+                    value = document.source[value_start..pos];
                 }
             }
             try element.attrs.put(attr_name, value);
@@ -150,7 +165,7 @@ pub fn load(allocator: mem.Allocator, source: []const u8) !Document {
         if (!self_closing and !isVoidElement(element.tag)) try stack.append(element);
     }
 
-    return .{ .allocator = allocator, .root = root };
+    return document;
 }
 
 fn isSpace(c: u8) bool {
@@ -165,23 +180,54 @@ fn isNameChar(c: u8) bool {
     return !isSpace(c) and c != '/' and c != '>' and c != '=' and c != '<';
 }
 
-fn isVoidElement(tag: []const u8) bool {
-    return mem.eql(u8, tag, "area") or mem.eql(u8, tag, "base") or
-        mem.eql(u8, tag, "br") or mem.eql(u8, tag, "col") or
-        mem.eql(u8, tag, "embed") or mem.eql(u8, tag, "hr") or
-        mem.eql(u8, tag, "img") or mem.eql(u8, tag, "input") or
-        mem.eql(u8, tag, "link") or mem.eql(u8, tag, "meta") or
-        mem.eql(u8, tag, "param") or mem.eql(u8, tag, "source") or
-        mem.eql(u8, tag, "track") or mem.eql(u8, tag, "wbr");
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
+    }
+    return true;
 }
 
-test "load parses HTML and exposes Cheerio-style selection" {
-    var document = try load(std.testing.allocator, "<div id='app'><p class='x'>Hello</p><br></div>");
+fn isRawTextElement(tag: []const u8) bool {
+    return asciiEqlIgnoreCase(tag, "script") or asciiEqlIgnoreCase(tag, "style") or
+        asciiEqlIgnoreCase(tag, "textarea") or asciiEqlIgnoreCase(tag, "title");
+}
+
+fn findClosingTag(source: []const u8, start: usize, tag: []const u8) ?usize {
+    var i = start;
+    while (i + 2 < source.len) : (i += 1) {
+        if (source[i] != '<' or source[i + 1] != '/') continue;
+        var j = i + 2;
+        while (j < source.len and isNameChar(source[j])) j += 1;
+        if (asciiEqlIgnoreCase(source[i + 2 .. j], tag)) return i;
+    }
+    return null;
+}
+
+fn isVoidElement(tag: []const u8) bool {
+    return asciiEqlIgnoreCase(tag, "area") or asciiEqlIgnoreCase(tag, "base") or
+        asciiEqlIgnoreCase(tag, "br") or asciiEqlIgnoreCase(tag, "col") or
+        asciiEqlIgnoreCase(tag, "embed") or asciiEqlIgnoreCase(tag, "hr") or
+        asciiEqlIgnoreCase(tag, "img") or asciiEqlIgnoreCase(tag, "input") or
+        asciiEqlIgnoreCase(tag, "link") or asciiEqlIgnoreCase(tag, "meta") or
+        asciiEqlIgnoreCase(tag, "param") or asciiEqlIgnoreCase(tag, "source") or
+        asciiEqlIgnoreCase(tag, "track") or asciiEqlIgnoreCase(tag, "wbr");
+}
+
+test "load owns the source buffer and parses raw text elements" {
+    var input = try std.testing.allocator.dupe(u8, "<SCRIPT>if (a < b) x();</SCRIPT><IMG src=x/y>");
+    defer std.testing.allocator.free(input);
+
+    var document = try load(std.testing.allocator, input);
     defer document.deinit();
-    var paragraphs = try document.select("#app p.x");
-    defer paragraphs.deinit();
-    try std.testing.expectEqual(@as(usize, 1), paragraphs.length());
-    const value = try paragraphs.text();
-    defer std.testing.allocator.free(value);
-    try std.testing.expectEqualStrings("Hello", value);
+
+    var script = try document.select("script");
+    defer script.deinit();
+    const text = try script.text();
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("if (a < b) x();", text);
+
+    var image = try document.select("img");
+    defer image.deinit();
+    try std.testing.expectEqualStrings("x/y", image.attr("src").?);
 }
