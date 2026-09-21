@@ -1,10 +1,9 @@
-# Busca os dados do endereço pelo CEP.
-# A página usa um bloco schema.org PostalAddress com os atributos itemprop.
+# SemanticBehavior: resolve the address for a CEP.
 
 fetch "https://www.qualocep.com/busca-cep/18464142"
 
-select "span[itemprop=streetAddress]" to rua
-select "body > div.container > div.row.table-responsive > table > tbody > tr:nth-child(2) > td:nth-child(3)" to bairro
-select "span[itemprop=addressLocality]" to cidade
+street = get text from <span[itemprop="streetAddress"]>
+neighborhood = get text from <body > div.container > div.row.table-responsive > table > tbody > tr:nth-child(2) > td:nth-child(3)>
+locality = get text from <span[itemprop=addressLocality]>
 
-return json "{ \"rua\": rua, \"bairro\": bairro, \"cidade\": cidade }"
+return { street, neighborhood, locality }
