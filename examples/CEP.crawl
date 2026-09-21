@@ -1,0 +1,10 @@
+# Busca os dados do endereço pelo CEP.
+# A página usa um bloco schema.org PostalAddress com os atributos itemprop.
+
+fetch "https://www.qualocep.com/busca-cep/18464142"
+
+select "span[itemprop=streetAddress]" to rua
+select "body > div.container > div.row.table-responsive > table > tbody > tr:nth-child(2) > td:nth-child(3)" to bairro
+select "span[itemprop=addressLocality]" to cidade
+
+return json "{ \"rua\": rua, \"bairro\": bairro, \"cidade\": cidade }"
