@@ -388,8 +388,8 @@ fn freeTree(allocator: mem.Allocator, node: *dom.Node) void {
 
 test "find does not use ancestors outside its scope" {
     const allocator = std.testing.allocator;
-    const dsl = @import("dsl.zig");
-    const spec = comptime dsl.el("div", .{}, .{
+    const test_dsl = @import("dsl.zig");
+    const spec = comptime test_dsl.el("div", .{}, .{
         dsl.el("section", .{}, .{dsl.el("p", .{}, .{"inside"})}),
     });
     const root = try dsl.render(allocator, spec);
