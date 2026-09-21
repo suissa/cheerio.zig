@@ -113,3 +113,39 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+## Natural command DSL
+
+The command parser provides a small declarative language for browser-like
+DOM workflows. Commands are bare words; selectors, HTML, values, and text
+are always quoted. Selection results can be named with an identifier.
+
+```text
+load "<html><body><input type=email><button class=submit>Send</button></body></html>"
+get text from "button.submit"
+select "input[type=email]" to email
+type "jaja@ksdl.com" in email
+click in "button.submit"
+```
+
+Parse it with:
+
+```zig
+var script = try zhtml.parseCommands(allocator, source);
+defer script.deinit();
+
+for (script.commands) |command| {
+    switch (command) {
+        .Load => |load| std.debug.print("load {s}\n", .{load.html}),
+        .GetText => |get| std.debug.print("text from {s}\n", .{get.selector}),
+        .Select => |select_cmd| std.debug.print("select {s} as {s}\n", .{ select_cmd.selector, select_cmd.alias }),
+        .Type => |type_cmd| std.debug.print("type {s} in {s}\n", .{ type_cmd.value, type_cmd.alias }),
+        .Click => |click| std.debug.print("click in {s}\n", .{click.selector}),
+    }
+}
+```
+
+This module parses commands into a typed AST. It does not execute browser
+actions itself; an executor can map the AST to Cheerio DOM mutations or to an
+E2E browser backend.
