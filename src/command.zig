@@ -23,6 +23,13 @@ pub const Command = union(enum) {
         selector: []const u8,
         alias: ?[]const u8 = null,
     },
+    Semantic: struct {
+        alias: []const u8,
+        action: []const u8,
+        property: []const u8,
+        linker: []const u8,
+        selector: []const u8,
+    },
     Select: struct {
         selector: []const u8,
         alias: []const u8,
@@ -105,18 +112,40 @@ pub fn parse(allocator: mem.Allocator, source: []const u8) !Script {
             errdefer allocator.free(alias);
 
             try cursor.symbol('=');
-            try cursor.keyword("get");
-            try cursor.keyword("text");
-            try cursor.keyword("from");
+            const action = try cursor.identifier(allocator);
+            errdefer allocator.free(action);
+            const property = try cursor.value(allocator);
+            errdefer allocator.free(property);
+            const linker = try cursor.identifier(allocator);
+            errdefer allocator.free(linker);
             const selector = try cursor.angleSelector(allocator);
+            errdefer allocator.free(selector);
             try cursor.end();
 
-            try appendCommand(allocator, &commands, .{
-                .GetText = .{
-                    .selector = selector,
-                    .alias = alias,
-                },
-            });
+            if (mem.eql(u8, action, "get") and
+                mem.eql(u8, property, "text") and
+                mem.eql(u8, linker, "from"))
+            {
+                allocator.free(action);
+                allocator.free(property);
+                allocator.free(linker);
+                try appendCommand(allocator, &commands, .{
+                    .GetText = .{
+                        .selector = selector,
+                        .alias = alias,
+                    },
+                });
+            } else {
+                try appendCommand(allocator, &commands, .{
+                    .Semantic = .{
+                        .alias = alias,
+                        .action = action,
+                        .property = property,
+                        .linker = linker,
+                        .selector = selector,
+                    },
+                });
+            }
         } else {
             return error.UnknownCommand;
         }
@@ -141,6 +170,13 @@ fn freeCommand(allocator: mem.Allocator, command: Command) void {
         .GetText => |value| {
             allocator.free(value.selector);
             if (value.alias) |alias| allocator.free(alias);
+        },
+        .Semantic => |value| {
+            allocator.free(value.alias);
+            allocator.free(value.action);
+            allocator.free(value.property);
+            allocator.free(value.linker);
+            allocator.free(value.selector);
         },
         .Select => |value| {
             allocator.free(value.selector);
@@ -185,6 +221,14 @@ const Cursor = struct {
         const value = try self.word();
         if (!isIdentifier(value)) return error.InvalidIdentifier;
         return try allocator.dupe(u8, value);
+    }
+
+    fn value(self: *Cursor, allocator: mem.Allocator) ![]const u8 {
+        self.skipSpace();
+        if (self.pos < self.input.len and self.input[self.pos] == '"') {
+            return self.quoted(allocator);
+        }
+        return self.identifier(allocator);
     }
 
     fn quoted(self: *Cursor, allocator: mem.Allocator) ![]const u8 {
