@@ -390,9 +390,9 @@ test "find does not use ancestors outside its scope" {
     const allocator = std.testing.allocator;
     const test_dsl = @import("dsl.zig");
     const spec = comptime test_dsl.el("div", .{}, .{
-        dsl.el("section", .{}, .{dsl.el("p", .{}, .{"inside"})}),
+        test_dsl.el("section", .{}, .{test_dsl.el("p", .{}, .{"inside"})}),
     });
-    const root = try dsl.render(allocator, spec);
+    const root = try test_dsl.render(allocator, spec);
     defer dom.destroyTree(allocator, root);
 
     var section = try select(allocator, root, "section");
@@ -404,13 +404,13 @@ test "find does not use ancestors outside its scope" {
 
 test "next skips text nodes" {
     const allocator = std.testing.allocator;
-    const dsl = @import("dsl.zig");
-    const spec = comptime dsl.el("div", .{}, .{
-        dsl.el("p", .{}, .{"a"}),
+    const test_dsl = @import("dsl.zig");
+    const spec = comptime test_dsl.el("div", .{}, .{
+        test_dsl.el("p", .{}, .{"a"}),
         " between ",
-        dsl.el("span", .{}, .{"b"}),
+        test_dsl.el("span", .{}, .{"b"}),
     });
-    const root = try dsl.render(allocator, spec);
+    const root = try test_dsl.render(allocator, spec);
     defer dom.destroyTree(allocator, root);
 
     var p = try select(allocator, root, "p");
