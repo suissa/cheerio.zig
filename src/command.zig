@@ -180,9 +180,9 @@ const Cursor = struct {
             switch (escaped) {
                 '"' => try value.append('"'),
                 '\\' => try value.append('\\'),
-                'n' => try value.append('\\n'),
-                'r' => try value.append('\\r'),
-                't' => try value.append('\\t'),
+                'n' => try value.append('\n'),
+                'r' => try value.append('\r'),
+                't' => try value.append('\t'),
                 else => return error.InvalidEscape,
             }
         }
