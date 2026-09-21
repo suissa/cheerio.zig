@@ -228,31 +228,27 @@ const Cursor = struct {
         if (self.pos >= self.input.len or self.input[self.pos] != '<') return error.ExpectedSymbol;
         self.pos += 1;
 
-        var value = ArrayList(u8).init(allocator);
-        errdefer value.deinit();
+        const start = self.pos;
+        var last_unquoted_gt: ?usize = null;
         var quote: ?u8 = null;
 
         while (self.pos < self.input.len) {
             const c = self.input[self.pos];
-            self.pos += 1;
 
             if (quote) |active_quote| {
-                try value.append(c);
                 if (c == active_quote) quote = null;
-                continue;
+            } else if (c == '"' or c == '\'') {
+                quote = c;
+            } else if (c == '>') {
+                last_unquoted_gt = self.pos;
             }
 
-            if (c == '"' or c == '\'') {
-                quote = c;
-                try value.append(c);
-            } else if (c == '>') {
-                return value.toOwnedSlice();
-            } else {
-                try value.append(c);
-            }
+            self.pos += 1;
         }
 
-        return error.UnexpectedEndOfCommand;
+        const end = last_unquoted_gt orelse return error.UnexpectedEndOfCommand;
+        self.pos = end + 1;
+        return try allocator.dupe(u8, self.input[start..end]);
     }
 
     fn objectFields(self: *Cursor, allocator: mem.Allocator) ![][]const u8 {
