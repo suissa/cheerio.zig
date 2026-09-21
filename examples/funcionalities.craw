@@ -1,0 +1,22 @@
+# Complete crawler command example
+# Commands are bare words; selectors and values stay inside quotes.
+
+load "<!doctype html><html><head><title>Login</title></head><body><main id='app'><form class='login'><label for='email'>E-mail</label><input type='email' name='email'><input id='password' type='password'><button class='submit'>Entrar</button></form></main></body></html>"
+
+# Read text from a selector.
+get text from "title"
+
+# Select an element and keep the selection under an alias.
+select "input[type=email]" to email
+select "input#password" to password
+select "button.submit" to submit_button
+
+# Type values into named selections.
+type "jaja@ksdl.com" in email
+type "s3nh@-segur@-temporaria" in password
+
+# Click an element by selector.
+click in "button.submit"
+
+# Values support escaped quotes, backslashes, and control characters.
+type "crawler says: \"done\"\\nnext line" in email
