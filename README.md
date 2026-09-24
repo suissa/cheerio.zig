@@ -1,45 +1,138 @@
-# Z-HTML
+# zcrawl
 
-This is a work in progress, spec compliant, HTML parser built with [Zig](https://ziglang.org). Currently lots of things are broken. You can check the status of tests that _are not_ passing by checking out the `ignored_tests` in [test/tokenizer-html5lib.zig](test/tokenizer-html5lib.zig).
+A Zig 0.16 HTML parser and cheerio-style query API.
 
-## Roadmap
+The public package/module name is `zcrawl`.
 
-- [x] Tokenizer (missing a few edge cases)
-- [ ] Parser (in progress)
-- [ ] JavaScript DOM API support
-- [x] cheerio-style comptime DSL + CSS selector query API (`dsl`/`select`)
+## Install
 
-See the [CHANGELOG.md](changelog) for detailed information on past changes.
-
-## Building
-
-Requires Zig 0.16.0.
-
-The html5lib tokenizer fixtures are a Git submodule. Clone with
-`--recurse-submodules`, or run `git submodule update --init` before running
-`zig build test-html5lib`.
+From your Zig project:
 
 ```sh
-zig build test           # run the library's unit tests
-zig build test-html5lib  # run the tokenizer against the html5lib-tests suite
+zig fetch --save git+https://github.com/suissa/cheerio.zig
+```
+
+Because this repository now ships a Zig package manifest with `.name = .zcrawl`,
+Zig can add it to your project's `build.zig.zon`.
+
+Then wire the dependency into your `build.zig`:
+
+```zig
+const zcrawl_dep = b.dependency("zcrawl", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+const exe = b.addExecutable(.{
+    .name = "app",
+    .root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "zcrawl",
+                .module = zcrawl_dep.module("zcrawl"),
+            },
+        },
+    }),
+});
+```
+
+And import it in Zig:
+
+```zig
+const zcrawl = @import("zcrawl");
+```
+
+## HTML loading and selectors
+
+```zig
+const std = @import("std");
+const zcrawl = @import("zcrawl");
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    var page = try zcrawl.load(
+        allocator,
+        "<main><h1>Hello</h1><p class=\"item\">World</p></main>",
+    );
+    defer page.deinit();
+
+    var heading = try page.select("main h1");
+    defer heading.deinit();
+
+    const title = try heading.text();
+    defer allocator.free(title);
+
+    std.debug.print("{s}\n", .{title});
+}
+```
+
+`Selection` supports the common cheerio-style methods:
+
+- `.find(selector)`
+- `.text()`
+- `.attr(name)`
+- `.html()`
+- `.first()`
+- `.eq(index)`
+- `.each(fn)`
+
+Selectors support tag names, `.class`, `#id`, `*`, compound selectors such as
+`div.row#main`, and descendant combinators.
+
+## DSL
+
+```zig
+const std = @import("std");
+const zcrawl = @import("zcrawl");
+const el = zcrawl.dsl.el;
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    const spec = comptime el("div", .{ .id = "app" }, .{
+        el("p", .{ .class = "greeting" }, .{"Hello, "}),
+        el("p", .{ .class = "greeting loud" }, .{"world!"}),
+    });
+
+    const root = try zcrawl.dsl.render(allocator, spec);
+
+    var loud = try zcrawl.select(allocator, root, ".loud");
+    defer loud.deinit();
+
+    const message = try loud.text();
+    defer allocator.free(message);
+
+    std.debug.print("{s}\n", .{message});
+}
 ```
 
 ## Tokenizer
 
-The `Tokenizer` struct provides a (mostly) fully featured HTML tokenizer built according to the [WHATGW HTML Spec](https://html.spec.whatwg.org/multipage/parsing.html#tokenization). It is a streaming tokenizer which takes as input a full document, processes the document character by character, and emits both `Token`s and `ParseError`s. An example usage of it by itself could look like this:
-
 ```zig
 const std = @import("std");
-const zhtml = @import("zhtml");
-const Token = zhtml.Token;
-const Tokenizer = zhtml.Tokenizer;
+const zcrawl = @import("zcrawl");
+
+const Token = zcrawl.Token;
+const Tokenizer = zcrawl.Tokenizer;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
-    var tokenizer = try Tokenizer.initWithString(allocator, "<p>Hello, world!</p>");
+
+    var tokenizer = try Tokenizer.initWithString(
+        allocator,
+        "<p>Hello, world!</p>",
+    );
+
     while (true) {
         const token = tokenizer.nextToken() catch |err| {
-            std.debug.print("{} (line: {}, column: {})\n", .{ err, tokenizer.line, tokenizer.column });
+            std.debug.print(
+                "{} (line: {}, column: {})\n",
+                .{ err, tokenizer.line, tokenizer.column },
+            );
             continue;
         };
 
@@ -51,65 +144,22 @@ pub fn main() !void {
 }
 ```
 
-though the `Tokenizer` is meant to be used in conjunction with the `Parser`.
+## Building
 
-## Parser
+Requires Zig 0.16.0.
 
-Work in progress. Check back later.
-
-## The cheerio-style DSL
-
-Independent of the spec tokenizer/parser above, `zhtml.dsl` and `zhtml.select`
-provide a small, comptime-checked way to build a tree and query it the way
-you'd use [cheerio](https://cheerio.js.org/)'s `$`:
-
-```zig
-const std = @import("std");
-const zhtml = @import("zhtml");
-const el = zhtml.dsl.el;
-
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-
-    // Build the tree at comptime, type-checked as you write it.
-    const spec = comptime el("div", .{ .id = "app" }, .{
-        el("p", .{ .class = "greeting" }, .{"Hello, "}),
-        el("p", .{ .class = "greeting loud" }, .{"world!"}),
-    });
-    const root = try zhtml.dsl.render(allocator, spec);
-
-    // Query it like cheerio's `$(html)`.
-    var loud = try zhtml.select(allocator, root, ".loud");
-    defer loud.deinit();
-    const message = try loud.text();
-    defer allocator.free(message);
-    std.debug.print("{s}\n", .{message}); // "world!"
-}
+```sh
+zig build test
 ```
 
-`Selection` supports the common chainable cheerio methods: `.find(selector)`,
-`.text()`, `.attr(name)`, `.html()`, `.first()`, `.eq(index)`, and `.each(fn)`.
-Selectors support tag names, `.class`, `#id`, `*`, compound selectors
-(`div.row#main`), and descendant combinators (`div p.item`).
+The html5lib tokenizer fixtures are a Git submodule. For the html5lib suite, clone
+with `--recurse-submodules` or run:
 
-For HTML input, use `zhtml.load` and keep the returned document alive while
-using its selections:
-
-```zig
-var page = try zhtml.load(allocator, "<main><h1>Hello</h1></main>");
-defer page.deinit();
-var heading = try page.select("main h1");
-defer heading.deinit();
-const title = try heading.text();
-defer allocator.free(title);
+```sh
+git submodule update --init
+zig build test-html5lib
 ```
 
 ## License
 
-Copyright 2022 Chris Watson
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+MIT.
