@@ -4,7 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zhtml_module = b.addModule("zhtml", .{
+    // Public package module. Consumers should import this as:
+    // const zcrawl = @import("zcrawl");
+    const zcrawl_module = b.addModule("zcrawl", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
@@ -27,7 +29,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zhtml", .module = zhtml_module },
+                .{ .name = "zcrawl", .module = zcrawl_module },
+                // Compatibility alias for existing internal tests/imports.
+                .{ .name = "zhtml", .module = zcrawl_module },
             },
         }),
     });
